@@ -4772,7 +4772,11 @@ function toggleDebtCPI(did,checked){
       const secLinks=((d.bcLinks||{})['debt-'+did])||[];
       if(secLinks.length>0){
         const s=secLinks[0];
-        if(s.secName) cpi.property.address=s.secName;
+        // Use secDesc (broker's address description) if available, else fall back to secName
+        const rawSecId=(s.secId||'').replace('bcsec-','');
+        const rawSec=g?.bcSecs?.find(x=>String(x.id)===rawSecId);
+        const addr=s.secDesc||(rawSec?.desc)||s.secName||'';
+        if(addr) cpi.property.address=addr;
         if(s.secValue) cpi.property.value=String(s.secValue);
       }
       d.cpiAssessments.push(cpi);
@@ -5207,6 +5211,43 @@ function renderCPI(){
     return;
   }
   d.cpiAssessments.forEach(cpi=>{
+    // ── Sync linked fields from Deal Structuring before rendering ──
+    if(cpi.linkedDebtId){
+      const g2=CG();
+      const linkedDebt=g2?.debts?.find(x=>x._did===cpi.linkedDebtId);
+      if(linkedDebt){
+        // Sync property address + value from the first linked security in bcLinks
+        const secLinks=(d.bcLinks||{})['debt-'+cpi.linkedDebtId]||[];
+        if(secLinks.length>0){
+          const s=secLinks[0];
+          // Resolve raw security for desc (actual address text)
+          const rawSecId=s.secId.replace('bcsec-','');
+          const rawSec=g2?.bcSecs?.find(x=>String(x.id)===rawSecId);
+          const addr=s.secDesc||(rawSec?.desc)||'';
+          if(!cpi.property.address&&addr) cpi.property.address=addr;
+          if(!cpi.property.value&&s.secValue) cpi.property.value=String(s.secValue);
+        }
+        // Sync first debt row from the linked debt record (always keep in step)
+        if(!cpi.debts)cpi.debts=[];
+        if(cpi.debts.length===0) cpi.debts=[{id:'cd_'+Date.now(),lender:'',limit:'',rate:'',type:'IO',amortPA:'',assessRate:''}];
+        const d0=cpi.debts[0];
+        if(linkedDebt.lender) d0.lender=linkedDebt.lender;
+        if(linkedDebt.limit) d0.limit=String(linkedDebt.limit);
+        if(linkedDebt.rate) d0.rate=String(linkedDebt.rate);
+        if(linkedDebt.repType){
+          const rtMap={'Interest Only':'IO','IO':'IO','P&I':'P&I','P and I':'P&I'};
+          d0.type=rtMap[linkedDebt.repType]||d0.type;
+        }
+        // Sync property owners from debt entities if empty
+        if(!cpi.propertyOwners?.length){
+          const eids=(linkedDebt.entityIds||[linkedDebt.entityId]).filter(Boolean);
+          cpi.propertyOwners=eids.map(eid=>{
+            const e=g2.entities?.find(x=>x.id===eid);
+            return{entityId:eid,entityName:e?.name||''};
+          }).filter(o=>o.entityId);
+        }
+      }
+    }
     const r=calcCPI(cpi);
     const card=document.createElement('div');
     card.className='cpi-assess-card open';
@@ -6354,10 +6395,23 @@ function bcGetSecurities(){
 function bcLink(loanId,sec){
   if(!sec||!loanId)return;
   const d=CD(); if(!d)return;
+  const g=CG();
   if(!d.bcLinks)d.bcLinks={};
   if(!d.bcLinks[loanId])d.bcLinks[loanId]=[];
   if(d.bcLinks[loanId].find(l=>l.secId===sec.id))return;
-  d.bcLinks[loanId].push({secId:sec.id,secName:sec.name,secValue:+sec.value||0});
+  // Resolve the raw security to get desc (the actual property address the broker typed)
+  const rawSec=g?.bcSecs?.find(s=>'bcsec-'+s.id===sec.id);
+  const secDesc=rawSec?.desc||'';
+  d.bcLinks[loanId].push({secId:sec.id,secName:sec.name,secValue:+sec.value||0,secDesc});
+  // Sync into any linked CPI assessment — pre-fill blanks immediately on drag-link
+  if(loanId.startsWith('debt-')){
+    const rawDid=parseFloat(loanId.replace('debt-',''));
+    const cpi=(d.cpiAssessments||[]).find(c=>c.linkedDebtId===rawDid);
+    if(cpi){
+      if(!cpi.property.address&&secDesc) cpi.property.address=secDesc;
+      if((!cpi.property.value||cpi.property.value==='0')&&sec.value) cpi.property.value=String(sec.value);
+    }
+  }
   bcSyncToFacilities();
   saveToStorage();
   renderBaseCamp();
@@ -6399,13 +6453,20 @@ function confirmEditSecurity(){
   sec.value=+document.getElementById('editSecValue').value||0;
   sec.ownerId=parseInt(ownerSel.value)||0;
   sec.ownerName=(ownerSel.options[ownerSel.selectedIndex]?.text||'').split(' (')[0];
-  // Also update linked security values in bcLinks
+  // Update linked security values in bcLinks, and sync into any linked CPI assessment
   const d=CD(); if(d&&d.bcLinks){
     Object.keys(d.bcLinks).forEach(lid=>{
       (d.bcLinks[lid]||[]).forEach(l=>{
         if(l.secId==='bcsec-'+secId){
           l.secName=sec.type+(sec.desc?' – '+sec.desc:'');
           l.secValue=sec.value;
+          l.secDesc=sec.desc||'';
+          // Sync updated value into any linked CPI assessment
+          if(lid.startsWith('debt-')){
+            const rawDid=parseFloat(lid.replace('debt-',''));
+            const cpi=(d.cpiAssessments||[]).find(c=>c.linkedDebtId===rawDid);
+            if(cpi) cpi.property.value=String(sec.value);
+          }
         }
       });
     });
