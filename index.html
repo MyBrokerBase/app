@@ -407,6 +407,10 @@ body{font-family:var(--sans);background:var(--bg);color:var(--ink);font-size:14p
 .etb .en{font-size:0.75rem;font-weight:600;color:var(--navy)}
 .etb .ed{font-size:0.62rem;color:var(--muted);margin-top:1px;line-height:1.3}
 .toast{position:fixed;bottom:20px;right:20px;z-index:999;background:var(--navy);color:var(--white);padding:9px 15px;border-radius:9px;font-size:0.77rem;font-weight:500;box-shadow:0 8px 24px rgba(0,0,0,0.18);opacity:0;transform:translateY(5px);transition:all .28s;pointer-events:none}
+#appLoadingOverlay{position:fixed;inset:0;z-index:9999;background:#0D1F3C;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;transition:opacity .3s}
+#appLoadingOverlay.hidden{opacity:0;pointer-events:none}
+.app-spinner{width:36px;height:36px;border:3px solid rgba(255,255,255,0.15);border-top-color:#F47920;border-radius:50%;animation:spin .75s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .toast.show{opacity:1;transform:translateY(0)}
 #fileInput{display:none}
 
@@ -455,7 +459,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--ink);font-size:14p
 const SUPABASE_URL='https://mqovtzuyerhqyywncuce.supabase.co';
 const SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xb3Z0enV5ZXJocXl5d25jdWNlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcxMDgzODcsImV4cCI6MjA5MjY4NDM4N30.mPP7PPIQLF7a86O03qbVEJ53cJenPspbVucIAw7qgYE';
 const _supa=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
-let BROKER_ID=null; // Set after login
+let BROKER_ID=null;   // Set after login
+let BROKER_EMAIL=null; // Set after login
 </script>
 
 </head>
@@ -757,7 +762,7 @@ let BROKER_ID=null; // Set after login
             <div style="font-family:var(--serif);font-size:1.6rem;color:#0D1F3C;margin-bottom:6px">Start your <em style="font-style:italic;color:#F47920">free trial</em></div>
             <div style="font-size:0.82rem;color:#8A8077;line-height:1.65">Your account is ready. Activate your 7-day free trial to get started — no charge until the trial ends.</div>
           </div>
-          <a id="stripeTrialBtn" href="#" target="_blank" class="btn-cta btn-cta-orange" style="margin-bottom:10px">
+          <a id="stripeTrialBtn" href="#" class="btn-cta btn-cta-orange" style="margin-bottom:10px">
             Activate 7-Day Free Trial →
           </a>
           <div style="font-size:0.73rem;color:#bbb;text-align:center;margin-bottom:20px">No charge for 7 days · Cancel anytime</div>
@@ -1348,6 +1353,11 @@ let BROKER_ID=null; // Set after login
 
 <div class="toast" id="toast"></div>
 
+<div id="appLoadingOverlay">
+  <div class="app-spinner"></div>
+  <div style="color:rgba(255,255,255,0.5);font-size:0.78rem;font-family:inherit;letter-spacing:0.04em">Loading…</div>
+</div>
+
 <!-- DELETE CONFIRM MODAL -->
 <div class="modal-ov" id="deleteModal">
   <div class="modal" style="max-width:420px">
@@ -1470,7 +1480,11 @@ async function checkSubscription(){
 
 function showPaymentWall(polling=false){
   const btn=document.getElementById('stripeTrialBtn');
-  if(btn)btn.href=`https://buy.stripe.com/bJe3cw5ng0NO7gE5KZ0co03?client_reference_id=${BROKER_ID}`;
+  if(btn){
+    let stripeUrl=`https://buy.stripe.com/bJe3cw5ng0NO7gE5KZ0co03?client_reference_id=${BROKER_ID}`;
+    if(BROKER_EMAIL)stripeUrl+=`&prefilled_email=${encodeURIComponent(BROKER_EMAIL)}`;
+    btn.href=stripeUrl;
+  }
   const defPanel=document.getElementById('payment-panel-default');
   const pollPanel=document.getElementById('payment-panel-polling');
   if(defPanel)defPanel.style.display=polling?'none':'block';
@@ -1478,15 +1492,19 @@ function showPaymentWall(polling=false){
   const logo=document.getElementById('paymentLogo');
   if(logo)logo.src=APP_LOGO||'';
   showScreen('paymentScreen');
+  // Always poll silently in background — catches returning-from-Stripe even without ?payment=success
+  if(!_pollInterval)pollForSubscription(polling);
 }
 
 async function recheckSubscription(){
+  if(_pollInterval){clearInterval(_pollInterval);_pollInterval=null;}
   const btn=document.getElementById('payment-recheck-btn');
   const msgEl=document.getElementById('payment-poll-msg');
-  if(msgEl)msgEl.textContent='Checking…';
+  if(btn){btn.disabled=true;btn.textContent='Checking…';}
+  if(msgEl)msgEl.textContent='';
   const hasSub=await checkSubscription();
   if(hasSub){
-    if(_pollInterval)clearInterval(_pollInterval);
+    if(msgEl)msgEl.textContent='Access confirmed ✓';
     await loadFromSupabase();
     await loadProfileFromSupabase();
     showScreen('homeScreen');
@@ -1494,23 +1512,33 @@ async function recheckSubscription(){
     updateBadges();
     toast('Welcome to MyBrokerBase! 🎉');
   }else{
-    if(msgEl)msgEl.textContent='';
-    toast('No active subscription found yet — please complete checkout first.');
+    if(btn){btn.disabled=false;btn.textContent='Activate my account';}
+    toast('Subscription not found yet — if you\'ve paid, it may take a minute. Try again shortly.');
+    // Restart background polling
+    pollForSubscription(false);
   }
 }
 
 let _pollInterval=null;
-function pollForSubscription(){
+function pollForSubscription(showProgress=true){
+  if(_pollInterval)clearInterval(_pollInterval);
   let attempts=0;
-  const maxAttempts=10;
+  const maxAttempts=20;
   const msgEl=document.getElementById('payment-poll-msg');
   const recheckBtn=document.getElementById('payment-recheck-btn');
   _pollInterval=setInterval(async()=>{
     attempts++;
-    if(msgEl)msgEl.textContent='Checking… ('+attempts+'/'+maxAttempts+')';
+    if(showProgress&&msgEl)msgEl.textContent='Activating… ('+attempts+'/'+maxAttempts+')';
     const hasSub=await checkSubscription();
     if(hasSub){
       clearInterval(_pollInterval);
+      _pollInterval=null;
+      // Switch to polling UI so user sees activation message before redirect
+      const defPanel=document.getElementById('payment-panel-default');
+      const pollPanel=document.getElementById('payment-panel-polling');
+      if(defPanel)defPanel.style.display='none';
+      if(pollPanel)pollPanel.style.display='block';
+      if(msgEl)msgEl.textContent='Access confirmed ✓';
       await loadFromSupabase();
       await loadProfileFromSupabase();
       showScreen('homeScreen');
@@ -1519,10 +1547,11 @@ function pollForSubscription(){
       toast('Welcome to MyBrokerBase! 🎉');
     }else if(attempts>=maxAttempts){
       clearInterval(_pollInterval);
-      if(msgEl)msgEl.textContent='Taking longer than expected.';
-      if(recheckBtn)recheckBtn.style.display='block';
+      _pollInterval=null;
+      if(showProgress&&msgEl)msgEl.textContent='Taking longer than expected.';
+      if(showProgress&&recheckBtn)recheckBtn.style.display='block';
     }
-  },3000);
+  },5000);
 }
 
 // ════════════════════════════════════════════════════
@@ -1536,12 +1565,12 @@ async function doLogin(){
   const{data,error}=await _supa.auth.signInWithPassword({email,password});
   if(error){errEl.textContent=error.message;return;}
   BROKER_ID=data.user.id;
+  BROKER_EMAIL=data.user.email||'';
   GROUPS=[]; nId=1; nGId=1; nDId=1; nFId=1; nDbId=1;
   await loadFromSupabase();
   if(!GROUPS.length) loadFromStorage();
   migrateOldData();
-  await loadProfileFromSupabase();
-  const hasSub=await checkSubscription();
+  const [,hasSub]=await Promise.all([loadProfileFromSupabase(),checkSubscription()]);
   if(!hasSub){showPaymentWall();return;}
   document.getElementById('profileScreen')?.classList.remove('open');
   showScreen('homeScreen');
@@ -1580,6 +1609,7 @@ async function doForgotPassword(){
 async function doLogout(){
   await _supa.auth.signOut();
   BROKER_ID=null;
+  BROKER_EMAIL=null;
   GROUPS=[];
   nId=1;nGId=1;nDId=1;nFId=1;nDbId=1;
   showScreen('loginScreen');
@@ -1589,13 +1619,14 @@ async function checkExistingSession(){
   const{data}=await _supa.auth.getSession();
   if(data?.session){
     BROKER_ID=data.session.user.id;
+    BROKER_EMAIL=data.session.user.email||'';
     GROUPS=[]; nId=1; nGId=1; nDId=1; nFId=1; nDbId=1;
     await loadFromSupabase();
     if(!GROUPS.length) loadFromStorage();
     migrateOldData();
     document.getElementById('profileScreen')?.classList.remove('open');
-    await loadProfileFromSupabase();
-    const hasSub=await checkSubscription();
+    // Run profile load and subscription check in parallel — saves one round-trip
+    const [,hasSub]=await Promise.all([loadProfileFromSupabase(),checkSubscription()]);
     if(!hasSub){
       const urlParams=new URLSearchParams(window.location.search);
       if(urlParams.get('payment')==='success'){
@@ -1931,11 +1962,8 @@ function renderHome(){
 
 function openGroup(gId){
   const g=GROUPS.find(x=>x.id===gId);if(!g)return;
-  currentGroupId=gId;
-  // Open first deal or create one
-  if(g.deals.length){ currentDealId=g.deals[0].id; }
-  else { createDealInGroup(gId,'New Application'); return; }
-  goToApp();
+  if(!g.deals.length){createDealInGroup(gId,'New Application');return;}
+  openClientScreen(gId);
 }
 function openClientScreen(gId){
   currentGroupId=gId;
@@ -1946,18 +1974,19 @@ function openClientScreen(gId){
   // Brand mark
   const cm=document.getElementById('clientBrandMark');
   if(cm){cm.innerHTML='<img src="'+APP_LOGO+'" style="height:40px;width:auto;max-width:220px;object-fit:contain;display:block" alt="MyBrokerBase"/>';cm.style.background='none';cm.style.color='transparent';cm.style.boxShadow='none';}
-  // Render app cards — same style as group cards
+  // Render app cards — sorted by createdAt descending
   const list=document.getElementById('clientAppsList');
   if(!list)return;
   list.innerHTML='';
-  g.deals.forEach(d=>{
-    const dateStr=d.meta?.date?new Date(d.meta.date).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'}):'';
+  const sortedDeals=[...g.deals].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  sortedDeals.forEach(d=>{
+    const createdStr=d.createdAt?new Date(d.createdAt).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'}):'';
     const lendingType=d.meta?.lendingType||'';
     const purpose=d.meta?.purpose||'';
     const status=d.status||'draft';
     const facCount=(d.facilities||[]).length;
     const totalAmt=(d.facilities||[]).reduce((s,f)=>s+(+f.amount||0),0);
-    const meta=[lendingType,purpose,dateStr].filter(Boolean).join(' · ');
+    const meta=[lendingType,purpose,createdStr?'Created '+createdStr:''].filter(Boolean).join(' · ');
     const chips=[
       status==='draft'?'<span class="deal-chip draft">Draft</span>':'',
       status==='active'?'<span class="deal-chip active">Active</span>':'',
@@ -2027,6 +2056,8 @@ function createDealInGroup(gId,dealName,isNewGroup,dealType){
     deal.bcLinks=JSON.parse(JSON.stringify(lastDeal.bcLinks||{}));
     // Carry over settings
     if(lastDeal.settings)deal.settings={...lastDeal.settings};
+    // Carry over background commentary
+    if(lastDeal.memo?.background_main)deal.memo.background_main=lastDeal.memo.background_main;
   }
   g.deals.push(deal);
   currentGroupId=gId; currentDealId=dId;
@@ -5501,6 +5532,8 @@ function renderMemoProgress(d){
 function toggleMemoInclude(id,checked){
   const d=CD(); if(!d)return;
   d.memo['_incl_'+id]=checked;
+  saveToStorage();
+  renderMemoProgress(d);
   const ms=document.getElementById('ms-'+id);
   if(ms){ms.classList.toggle('excluded',!checked);}
   const mb=document.getElementById('mb-'+id);
@@ -5509,7 +5542,7 @@ function toggleMemoInclude(id,checked){
   if(title)title.textContent=MEMO_SECS.find(s=>s.id===id)?.title+(checked?'':' — Excluded');
 }
 function toggleMemo(id){document.getElementById('ms-'+id)?.classList.toggle('memo-open');}
-function doneMemo(id){const d=CD();if(d)d.memo['_done_'+id]=true;document.getElementById('ms-'+id)?.classList.add('done');toast('Section complete ✓');}
+function doneMemo(id){const d=CD();if(!d)return;d.memo['_done_'+id]=true;saveToStorage();document.getElementById('ms-'+id)?.classList.add('done');renderMemoProgress(d);toast('Section complete ✓');}
 
 function buildReqSummary(){
   const d=CD(); if(!d?.facilities.length) return '<div class="notice nw">No facilities yet. Complete Credit Request first.</div>';
@@ -5625,7 +5658,18 @@ function buildCPIMemoSection(){
 function buildBackgroundSection(){
   const g=CG(); const groupBg=g?.background||'';
   const d=CD(); const hint=`Cover the following:\n• Customer track record — relationship length, repayment history, facility conduct\n• What does the business do? How long operating? What industry?\n• Key customers and suppliers — any concentration risk?\n• Success factors and key challenges\n• Key contact (name, role, contact details)\n• Other material issues — Google search, trade disruptions, litigation, ATO debts\n• Corporate/family structure — ownership and control`;
-  return `<div class="fg"><label class="fl">Background & History</label><div class="fh" style="margin-bottom:6px;white-space:pre-line">${hint}</div><textarea class="fta" style="min-height:160px" id="mf-background-main" oninput="memoSet('background_main',this.value)">${d?.memo?.background_main||groupBg||''}</textarea></div>`;
+  const prevWithBg=(g?.deals||[]).filter(x=>x.id!==d?.id&&x.memo?.background_main).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  const importBtn=prevWithBg.length?`<button class="btn btn-ghost btn-sm" onclick="importBackgroundCommentary()" style="margin-top:8px">⬇ Import commentary from previous application</button>`:'';
+  return `<div class="fg"><label class="fl">Background & History</label><div class="fh" style="margin-bottom:6px;white-space:pre-line">${hint}</div><textarea class="fta" style="min-height:160px" id="mf-background-main" oninput="memoSet('background_main',this.value)">${d?.memo?.background_main||groupBg||''}</textarea>${importBtn}</div>`;
+}
+function importBackgroundCommentary(){
+  const g=CG(); const d=CD(); if(!g||!d)return;
+  const prev=(g.deals||[]).filter(x=>x.id!==d.id&&x.memo?.background_main).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))[0];
+  if(!prev){toast('No previous commentary found');return;}
+  const ta=document.getElementById('mf-background-main');
+  if(ta){ta.value=prev.memo.background_main;memoSet('background_main',prev.memo.background_main);}
+  saveToStorage();
+  toast('Commentary imported ✓');
 }
 function buildMemoFields(s){
   return (s.fields||[]).map(f=>memoField(s.id+'-'+f.id,f.label,f.hint||'','',90,s.id+'_'+f.id)).join('');
@@ -5657,20 +5701,17 @@ function buildPrimarySection(){
     +'<div style="font-family:var(--serif);font-size:1.1rem;color:'+colA+'">'+fmt(Math.abs(sA))+'/yr '+(sA>=0?'SURPLUS':'DEFICIT')+'</div></div>'
     +'<div><div style="font-size:0.59rem;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Surplus / Deficit — Actual</div>'
     +'<div style="font-family:var(--serif);font-size:1.1rem;color:'+colAct+'">'+fmt(Math.abs(sAct))+'/yr '+(sAct>=0?'SURPLUS':'DEFICIT')+'</div></div></div>'
-    +memoField('primary-servicing','','Reference the surplus/deficit figures. If a deficit at affordability, provide rationale including material cash drivers, non-recurring items, or other mitigants.','',90,'primary_servicing')
-    +memoField('primary-strategy','','Articulate the repayment source and strategy at end of any IO term.','',70,'primary_strategy');
+    +memoField('primary-combined','','Reference the surplus/deficit figures above. Comment on key income drivers and any material adjustments. Articulate the primary repayment source and the strategy at end of any IO term.','',160,'primary_combined');
 }
 function buildSecondarySection(){
   const d=CD(); if(!d)return '';
   const hasProperty=(d.facilities||[]).some(f=>(f.securities||[]).some(s=>s.type?.includes('Real Property')));
   const hasGuarantors=(d.facilities||[]).some(f=>(f.guarantors||[]).length>0);
-  const g=CG();
-  const guarNames=[...new Set((d.facilities||[]).flatMap(f=>f.guarantors.map(id=>g?.entities.find(e=>e.id===id)?.name||'')).filter(Boolean))];
-  const lvrHint=!hasProperty?'Note: No property security — if unsecured, comment on the appropriateness of proceeding without security.':'Describe the security package: property values, encumbrances and blended LVR. Comment on each guarantor\'s net asset position and capacity to support the lending. Note any risk factors relating to the security or guarantors and how these have been mitigated.';
-  return memoField('sec-lvr','',lvrHint,'',80,'sec_lvr')
-    +(hasProperty?memoField('sec-valuation','','Any adverse findings? Expand and mitigate. Comment on whether proceeds of sale are likely to clear debt.','',80,'sec_valuation'):'')
-    +(hasGuarantors?memoField('sec-guasop','',"Comment on each guarantor's net asset position, ability to support, and existing obligations.",'',80,'sec_guasop'):'')
-    +(hasGuarantors?memoField('sec-guasuit','Suitability of Guarantors','Assess suitability and adequacy. Limited or unlimited guarantee? Appropriate for risk profile?','',70,'sec_guasuit'):'');
+  let hint='Describe the security package including property values, encumbrances and blended LVR.';
+  if(!hasProperty)hint='Note: No property security — comment on the appropriateness of proceeding without security.';
+  if(hasProperty)hint+=' Comment on any adverse valuation findings and whether sale proceeds would clear debt.';
+  if(hasGuarantors)hint+=' Assess each guarantor\'s net asset position and capacity to support. Note whether guarantees are limited or unlimited and confirm their suitability for the risk profile.';
+  return memoField('sec-combined','',hint,'',160,'sec_combined');
 }
 function memoSet(k,v){const d=CD();if(d){if(!d.memo)d.memo={};d.memo[k]=v;}}
 function memoIncl(k){const d=CD();return d?.memo?.['_incl_field_'+k]!==false;}
@@ -5941,6 +5982,15 @@ async function _renderCPIMemoHTML(d,g){
   toast('CPI Assessment PDF saved');
 }
 
+function contrastColor(hex){
+  // Returns white or dark navy depending on which contrasts better against the given hex background
+  const h=(hex||'#000000').replace('#','');
+  const r=parseInt(h.slice(0,2)||'00',16);
+  const g=parseInt(h.slice(2,4)||'00',16);
+  const b=parseInt(h.slice(4,6)||'00',16);
+  const lum=(0.299*r+0.587*g+0.114*b)/255;
+  return lum>0.55?'#0D1F3C':'#FFFFFF';
+}
 function _buildCPIReportHTML(d,g){
   const esc=(s='')=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const fmtN=(n)=>n||n===0?'$'+Math.round(+n).toLocaleString('en-AU'):'—';
@@ -5951,6 +6001,8 @@ function _buildCPIReportHTML(d,g){
   const cpis=d.cpiAssessments||[];
   const primary=PROFILE.brandPrimary||'#0D1F3C';
   const secondary=PROFILE.brandSecondary||'#F47920';
+  const primaryText=contrastColor(primary);
+  const secondaryText=contrastColor(secondary);
   const css=`*{margin:0;padding:0;box-sizing:border-box}
     body{font-family:Arial,Helvetica,sans-serif;background:#CACACA;padding:20px}
     .pdf-page{width:794px;height:1123px;background:white;margin:0 auto 20px;position:relative;overflow:hidden;display:flex;flex-direction:column}
@@ -5959,22 +6011,22 @@ function _buildCPIReportHTML(d,g){
     .hdr{background:${primary};padding:10px 44px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
     .hdr-left{display:flex;align-items:center;gap:12px}
     .hdr-app{font-size:10px;color:rgba(255,255,255,0.55);font-family:Arial}
-    .hdr-conf{font-size:8px;font-weight:700;color:${secondary};font-family:Arial}
+    .hdr-conf{font-size:8px;font-weight:700;color:${primaryText};font-family:Arial}
     .ftr{position:absolute;bottom:0;left:0;right:0;height:32px;background:#F8F7F4;border-top:1px solid #E5E0D8;display:flex;align-items:center;justify-content:space-between;padding:0 44px}
     .ftr-text{font-size:7.5px;color:#999;font-family:Arial}
     .pb{padding-bottom:32px;flex:1;overflow:hidden}
     .sec{padding:9px 44px;background:${primary};display:flex;align-items:center;gap:10px;flex-shrink:0}
-    .sec-num{width:22px;height:22px;border-radius:50%;background:${secondary};display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:${primary};flex-shrink:0;font-family:Arial}
-    .sec-title{font-size:12px;font-weight:700;color:white;font-family:Arial}
+    .sec-num{width:22px;height:22px;border-radius:50%;background:${secondary};display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:${secondaryText};flex-shrink:0;font-family:Arial}
+    .sec-title{font-size:12px;font-weight:700;color:${primaryText};font-family:Arial}
     .body{margin:8px 44px;font-size:11px;color:#333;line-height:1.6;font-family:Arial}
     .tbl{margin:6px 44px 8px;width:calc(100% - 88px);border-collapse:collapse;font-size:10px;font-family:Arial}
-    .tbl th{background:${primary};color:white;padding:5px 9px;font-size:7px;font-weight:700;text-transform:uppercase;text-align:left}
+    .tbl th{background:${primary};color:${primaryText};padding:5px 9px;font-size:7px;font-weight:700;text-transform:uppercase;text-align:left}
     .tbl th.r{text-align:right}
     .tbl td{padding:4px 9px;color:${primary};border-bottom:1px solid #F0EDE8;font-family:Arial}
     .tbl td.r{text-align:right;font-variant-numeric:tabular-nums}
     .tbl tr:nth-child(even) td{background:#F8F7F4}
-    .tbl tr.tot td{background:${primary};color:white;font-weight:700}
-    .tbl tr.tot td.r{color:${secondary}}
+    .tbl tr.tot td{background:${primary};color:${primaryText};font-weight:700}
+    .tbl tr.tot td.r{color:${primaryText}}
     .metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:6px 44px}
     .metric{padding:10px 12px;border:1.5px solid #E5E0D8;background:#F8F7F4}
     .metric-lbl{font-size:7px;font-weight:700;text-transform:uppercase;color:#888;margin-bottom:3px;font-family:Arial}
@@ -6596,6 +6648,8 @@ function _buildBaseCampHTML(d,g){
 
   const primary=PROFILE.brandPrimary||'#0D1F3C';
   const secondary=PROFILE.brandSecondary||'#F47920';
+  const primaryText=contrastColor(primary);
+  const secondaryText=contrastColor(secondary);
   const css=`
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:Arial,Helvetica,sans-serif;background:#CACACA;padding:20px}
@@ -6604,15 +6658,15 @@ function _buildBaseCampHTML(d,g){
     .stripe-gold{position:absolute;top:0;right:0;width:80px;height:8px;background:${secondary}}
     .hdr{background:${primary};padding:10px 44px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
     .hdr-app{font-size:10px;color:rgba(255,255,255,0.55);font-family:Arial}
-    .hdr-conf{font-size:8px;font-weight:700;color:${secondary};font-family:Arial}
+    .hdr-conf{font-size:8px;font-weight:700;color:${primaryText};font-family:Arial}
     .ftr{position:absolute;bottom:0;left:0;right:0;height:32px;background:#F8F7F4;border-top:1px solid #E5E0D8;display:flex;align-items:center;justify-content:space-between;padding:0 44px}
     .ftr-text{font-size:7.5px;color:#999;font-family:Arial}
     .pb{padding-bottom:32px;flex:1;padding-top:0}
     .sec-hdr{background:${primary};padding:9px 44px;display:flex;align-items:center;gap:10px;flex-shrink:0}
-    .sec-num{width:22px;height:22px;border-radius:50%;background:${secondary};display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:${primary};font-family:Arial}
+    .sec-num{width:22px;height:22px;border-radius:50%;background:${secondary};display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:${secondaryText};font-family:Arial}
     .sec-title{font-size:12px;font-weight:700;color:white;font-family:Arial}
     .tbl{width:calc(100% - 88px);margin:0 44px;border-collapse:collapse;font-size:9.5px;font-family:Arial}
-    .tbl th{background:${primary};color:white;padding:7px 10px;font-size:7px;font-weight:700;text-transform:uppercase;text-align:left}
+    .tbl th{background:${primary};color:${primaryText};padding:7px 10px;font-size:7px;font-weight:700;text-transform:uppercase;text-align:left}
     .tbl th.r{text-align:right}
     .tbl td{padding:0;color:${primary};vertical-align:top}
     .loan-row{border-bottom:2px solid ${primary}}
@@ -6641,7 +6695,7 @@ function _buildBaseCampHTML(d,g){
     .lvr-val{font-size:16px;font-weight:700}
     .lvr-sub{font-size:7px;color:#999;margin-top:2px}
     .lvr-none{font-size:10px;color:#aaa;font-style:italic}
-    .summary-row td{background:${primary};color:white;font-weight:700;font-size:9.5px;padding:8px 10px}
+    .summary-row td{background:${primary};color:${primaryText};font-weight:700;font-size:9.5px;padding:8px 10px}
     .legend{display:flex;gap:16px;align-items:center;padding:10px 44px;border-top:1px solid #E5E0D8}
     .ldot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:4px;vertical-align:middle}
     .ltxt{font-size:8px;color:#555;font-family:Arial}
@@ -7479,23 +7533,23 @@ function updateBadges(){const g=CG();const d=CD();setText('bdg-library',g?.entit
 // INIT
 // ════════════════════════════════════════════════════
 window.addEventListener('load', async function(){
-  // Wait for Supabase to be ready
   if(typeof supabase === 'undefined'){
     console.warn('Supabase not loaded');
+    document.getElementById('appLoadingOverlay')?.classList.add('hidden');
     return;
   }
   loadProfile();
-
   loadFromStorage();
   migrateOldData();
   refreshProfileDisplay();
   document.getElementById('appDate').value=new Date().toISOString().slice(0,10);
-  // Always start on login screen — checkExistingSession will redirect if session exists
   showScreen('loginScreen');
-  // Check URL param immediately before async session check
   const _urlP=new URLSearchParams(window.location.search);
   if(_urlP.get('signup')==='true') showAuthPanel('signup');
   await checkExistingSession();
+  // Fade out the loading overlay once session check is done
+  const ov=document.getElementById('appLoadingOverlay');
+  if(ov){ov.classList.add('hidden');setTimeout(()=>ov.remove(),350);}
 });
 
 
@@ -7523,6 +7577,8 @@ function _buildMemoHTML(d,g){
 
   const primary=PROFILE.brandPrimary||'#0D1F3C';
   const secondary=PROFILE.brandSecondary||'#F47920';
+  const primaryText=contrastColor(primary);
+  const secondaryText=contrastColor(secondary);
   const css=`
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:Arial,Helvetica,sans-serif;background:#CACACA;padding:20px}
@@ -7531,30 +7587,30 @@ function _buildMemoHTML(d,g){
     .stripe-gold{position:absolute;top:0;right:0;width:80px;height:8px;background:${secondary}}
     .hdr{background:${primary};padding:10px 44px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
     .hdr-app{font-size:10px;color:rgba(255,255,255,0.55);font-family:Arial}
-    .hdr-conf{font-size:8px;font-weight:700;color:${secondary};font-family:Arial}
+    .hdr-conf{font-size:8px;font-weight:700;color:${primaryText};font-family:Arial}
     .ftr{position:absolute;bottom:0;left:0;right:0;height:32px;background:#F8F7F4;border-top:1px solid #E5E0D8;display:flex;align-items:center;justify-content:space-between;padding:0 44px}
     .ftr-text{font-size:7.5px;color:#999;font-family:Arial}
     .pb{padding-bottom:32px;flex:1;overflow:hidden}
     .sec{padding:9px 44px;background:${primary};display:flex;align-items:center;gap:10px;flex-shrink:0}
-    .sec-num{width:22px;height:22px;border-radius:50%;background:${secondary};display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:${primary};flex-shrink:0;font-family:Arial}
-    .sec-title{font-size:12px;font-weight:700;color:white;font-family:Arial}
-    .sec-title em{color:${secondary};font-style:italic}
+    .sec-num{width:22px;height:22px;border-radius:50%;background:${secondary};display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:${secondaryText};flex-shrink:0;font-family:Arial}
+    .sec-title{font-size:12px;font-weight:700;color:${primaryText};font-family:Arial}
+    .sec-title em{color:${primaryText};font-style:italic;opacity:0.8}
     .sub{margin:11px 44px 6px;padding-bottom:4px;border-bottom:2px solid ${secondary}}
     .sub-title{font-size:8.5px;font-weight:700;text-transform:uppercase;color:${primary};font-family:Arial}
     .body{margin:0 44px 8px;font-size:11px;color:#333;line-height:1.65;font-family:Arial}
     .tbl{margin:0 44px 10px;width:calc(100% - 88px);border-collapse:collapse;font-size:10px;font-family:Arial}
-    .tbl th{background:${primary};color:white;padding:6px 9px;font-size:7px;font-weight:700;text-transform:uppercase;text-align:left;font-family:Arial}
+    .tbl th{background:${primary};color:${primaryText};padding:6px 9px;font-size:7px;font-weight:700;text-transform:uppercase;text-align:left;font-family:Arial}
     .tbl th.r{text-align:right}
     .tbl td{padding:5px 9px;color:${primary};border-bottom:1px solid #F0EDE8;font-family:Arial}
     .tbl td.r{text-align:right}
     .tbl tr:nth-child(even) td{background:#F8F7F4}
     .tbl tr.sub td{background:#EEF2F8;font-weight:700;color:#1E5BBC;border-top:1.5px solid #D0DAF0;border-bottom:1.5px solid #D0DAF0}
-    .tbl tr.tot td{background:${primary};color:white;font-weight:700;font-size:10.5px}
-    .tbl tr.tot td.r{color:${secondary}}
+    .tbl tr.tot td{background:${primary};color:${primaryText};font-weight:700;font-size:10.5px}
+    .tbl tr.tot td.r{color:${primaryText};opacity:0.85}
     .fac{margin:0;border:1px solid #E5E0D8;overflow:hidden;margin-bottom:9px}
     .fac-hdr{background:${primary};padding:9px 14px;display:flex;align-items:center;justify-content:space-between}
-    .fac-name{color:${secondary};font-size:8.5px;font-weight:700;text-transform:uppercase;font-family:Arial}
-    .fac-amt{color:white;font-size:16px;font-weight:700;font-family:Arial}
+    .fac-name{color:${primaryText};font-size:8.5px;font-weight:700;text-transform:uppercase;font-family:Arial;opacity:0.75}
+    .fac-amt{color:${primaryText};font-size:16px;font-weight:700;font-family:Arial}
     .fac-det{display:grid;padding:6px 14px;gap:10px;border-bottom:1px solid #F0EDE8}
     .fac-det.g3{grid-template-columns:1fr 1fr 1fr}
     .fac-det.g2{grid-template-columns:1fr 1fr}
@@ -7578,7 +7634,7 @@ function _buildMemoHTML(d,g){
     .sb-val{font-size:15px;font-weight:700;color:${primary};font-family:Arial}
     .rec-box{margin:0 44px 10px;background:${primary};padding:14px 18px;display:flex;align-items:center;justify-content:space-between}
     .rec-lbl{font-size:7.5px;font-weight:700;text-transform:uppercase;color:rgba(255,255,255,0.5);margin-bottom:4px;font-family:Arial}
-    .rec-val{font-size:17px;font-weight:700;color:${secondary};font-family:Arial}
+    .rec-val{font-size:17px;font-weight:700;color:${primaryText};font-family:Arial}
     .rec-note{font-size:9.5px;color:rgba(255,255,255,0.4);max-width:240px;line-height:1.55;text-align:right;font-family:Arial}
     .guar-card{margin:0 44px 9px;border:1px solid #E5E0D8;overflow:hidden}
     .guar-hdr{background:#F8F7F4;padding:6px 12px;font-size:7.5px;font-weight:700;text-transform:uppercase;color:#666;border-bottom:1px solid #E5E0D8;font-family:Arial}
