@@ -407,6 +407,11 @@ body{font-family:var(--sans);background:var(--bg);color:var(--ink);font-size:14p
 .etb .en{font-size:0.75rem;font-weight:600;color:var(--navy)}
 .etb .ed{font-size:0.62rem;color:var(--muted);margin-top:1px;line-height:1.3}
 .toast{position:fixed;bottom:20px;right:20px;z-index:999;background:var(--navy);color:var(--white);padding:9px 15px;border-radius:9px;font-size:0.77rem;font-weight:500;box-shadow:0 8px 24px rgba(0,0,0,0.18);opacity:0;transform:translateY(5px);transition:all .28s;pointer-events:none}
+.import-deal-card{background:var(--bg);border:1.5px solid var(--rule);border-radius:8px;padding:12px 14px;cursor:pointer;transition:border-color .15s,background .15s;margin-bottom:8px}
+.import-deal-card:hover{border-color:var(--blue);background:var(--white)}
+.import-deal-card-name{font-weight:600;font-size:0.85rem;color:var(--navy);margin-bottom:2px}
+.import-deal-card-date{font-size:0.68rem;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:0.04em}
+.import-deal-card-preview{font-size:0.78rem;color:var(--ink);line-height:1.5;opacity:0.75;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 #appLoadingOverlay{position:fixed;inset:0;z-index:9999;background:#0D1F3C;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;transition:opacity .3s}
 #appLoadingOverlay.hidden{opacity:0;pointer-events:none}
 .app-spinner{width:36px;height:36px;border:3px solid rgba(255,255,255,0.15);border-top-color:#F47920;border-radius:50%;animation:spin .75s linear infinite}
@@ -1356,6 +1361,20 @@ let BROKER_EMAIL=null; // Set after login
 <div id="appLoadingOverlay">
   <div class="app-spinner"></div>
   <div style="color:rgba(255,255,255,0.5);font-size:0.78rem;font-family:inherit;letter-spacing:0.04em">Loading…</div>
+</div>
+
+<!-- IMPORT COMMENTARY MODAL -->
+<div class="modal-ov" id="importCommentaryModal">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-hd">
+      <h3>Import Commentary</h3>
+      <p id="importCommentarySubtitle">Select an application to import from</p>
+    </div>
+    <div class="modal-bd" id="importCommentaryList" style="max-height:420px;overflow-y:auto"></div>
+    <div style="padding:14px 22px;border-top:1px solid var(--rule);display:flex;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="closeMod('importCommentaryModal')">Cancel</button>
+    </div>
+  </div>
 </div>
 
 <!-- DELETE CONFIRM MODAL -->
@@ -5655,24 +5674,52 @@ function buildCPIMemoSection(){
   }).join('');
 }
 
+let _importMemoKey=null,_importTextareaId=null;
+function showImportCommentaryModal(memoKey,textareaId){
+  const g=CG(); const d=CD(); if(!g||!d)return;
+  _importMemoKey=memoKey; _importTextareaId=textareaId;
+  const others=(g.deals||[]).filter(x=>x.id!==d.id&&x.memo?.[memoKey]).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  if(!others.length){toast('No previous commentary found for this section');return;}
+  const sub=document.getElementById('importCommentarySubtitle');
+  if(sub)sub.textContent=others.length+' previous application'+(others.length===1?'':'s')+ ' — click one to import';
+  const list=document.getElementById('importCommentaryList');
+  if(!list)return;
+  list.innerHTML='';
+  others.forEach(deal=>{
+    const dateStr=deal.createdAt?new Date(deal.createdAt).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'}):'';
+    const preview=(deal.memo[memoKey]||'').trim();
+    const card=document.createElement('div');
+    card.className='import-deal-card';
+    card.innerHTML=`<div class="import-deal-card-name">${esc(deal.name)}</div>`
+      +(dateStr?`<div class="import-deal-card-date">Created ${dateStr}</div>`:'')
+      +(preview?`<div class="import-deal-card-preview">${esc(preview)}</div>`:'<div class="import-deal-card-preview" style="font-style:italic;color:var(--muted)">No content</div>');
+    card.onclick=()=>{
+      const ta=document.getElementById(_importTextareaId);
+      if(ta){ta.value=preview;memoSet(_importMemoKey,preview);}
+      saveToStorage();
+      closeMod('importCommentaryModal');
+      toast('Commentary imported ✓');
+    };
+    list.appendChild(card);
+  });
+  openMod('importCommentaryModal');
+}
+function _memoImportBtn(memoKey,textareaId){
+  const g=CG(); const d=CD(); if(!g||!d)return '';
+  const hasPrev=(g.deals||[]).some(x=>x.id!==d.id&&x.memo?.[memoKey]);
+  return hasPrev?`<button class="btn btn-ghost btn-sm" onclick="showImportCommentaryModal('${memoKey}','${textareaId}')" style="margin-top:8px;font-size:0.73rem">⬇ Import from previous application</button>`:'';
+}
 function buildBackgroundSection(){
   const g=CG(); const groupBg=g?.background||'';
   const d=CD(); const hint=`Cover the following:\n• Customer track record — relationship length, repayment history, facility conduct\n• What does the business do? How long operating? What industry?\n• Key customers and suppliers — any concentration risk?\n• Success factors and key challenges\n• Key contact (name, role, contact details)\n• Other material issues — Google search, trade disruptions, litigation, ATO debts\n• Corporate/family structure — ownership and control`;
-  const prevWithBg=(g?.deals||[]).filter(x=>x.id!==d?.id&&x.memo?.background_main).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
-  const importBtn=prevWithBg.length?`<button class="btn btn-ghost btn-sm" onclick="importBackgroundCommentary()" style="margin-top:8px">⬇ Import commentary from previous application</button>`:'';
-  return `<div class="fg"><label class="fl">Background & History</label><div class="fh" style="margin-bottom:6px;white-space:pre-line">${hint}</div><textarea class="fta" style="min-height:160px" id="mf-background-main" oninput="memoSet('background_main',this.value)">${d?.memo?.background_main||groupBg||''}</textarea>${importBtn}</div>`;
-}
-function importBackgroundCommentary(){
-  const g=CG(); const d=CD(); if(!g||!d)return;
-  const prev=(g.deals||[]).filter(x=>x.id!==d.id&&x.memo?.background_main).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))[0];
-  if(!prev){toast('No previous commentary found');return;}
-  const ta=document.getElementById('mf-background-main');
-  if(ta){ta.value=prev.memo.background_main;memoSet('background_main',prev.memo.background_main);}
-  saveToStorage();
-  toast('Commentary imported ✓');
+  return `<div class="fg"><label class="fl">Background & History</label><div class="fh" style="margin-bottom:6px;white-space:pre-line">${hint}</div><textarea class="fta" style="min-height:160px" id="mf-background-main" oninput="memoSet('background_main',this.value)">${d?.memo?.background_main||groupBg||''}</textarea>${_memoImportBtn('background_main','mf-background-main')}</div>`;
 }
 function buildMemoFields(s){
-  return (s.fields||[]).map(f=>memoField(s.id+'-'+f.id,f.label,f.hint||'','',90,s.id+'_'+f.id)).join('');
+  return (s.fields||[]).map(f=>{
+    const savedKey=s.id+'_'+f.id;
+    const taId='mf-'+s.id+'-'+f.id;
+    return memoField(s.id+'-'+f.id,f.label,f.hint||'','',90,savedKey)+_memoImportBtn(savedKey,taId);
+  }).join('');
 }
 function buildRiskSection(sid){
   return `<div id="risklist-${sid}"></div><button class="btn-dashed" onclick="addRisk('${sid}')">＋ Add Risk</button>`;
@@ -5701,7 +5748,8 @@ function buildPrimarySection(){
     +'<div style="font-family:var(--serif);font-size:1.1rem;color:'+colA+'">'+fmt(Math.abs(sA))+'/yr '+(sA>=0?'SURPLUS':'DEFICIT')+'</div></div>'
     +'<div><div style="font-size:0.59rem;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Surplus / Deficit — Actual</div>'
     +'<div style="font-family:var(--serif);font-size:1.1rem;color:'+colAct+'">'+fmt(Math.abs(sAct))+'/yr '+(sAct>=0?'SURPLUS':'DEFICIT')+'</div></div></div>'
-    +memoField('primary-combined','','Reference the surplus/deficit figures above. Comment on key income drivers and any material adjustments. Articulate the primary repayment source and the strategy at end of any IO term.','',160,'primary_combined');
+    +memoField('primary-combined','','Reference the surplus/deficit figures above. Comment on key income drivers and any material adjustments. Articulate the primary repayment source and the strategy at end of any IO term.','',160,'primary_combined')
+    +_memoImportBtn('primary_combined','mf-primary-combined');
 }
 function buildSecondarySection(){
   const d=CD(); if(!d)return '';
@@ -5711,7 +5759,8 @@ function buildSecondarySection(){
   if(!hasProperty)hint='Note: No property security — comment on the appropriateness of proceeding without security.';
   if(hasProperty)hint+=' Comment on any adverse valuation findings and whether sale proceeds would clear debt.';
   if(hasGuarantors)hint+=' Assess each guarantor\'s net asset position and capacity to support. Note whether guarantees are limited or unlimited and confirm their suitability for the risk profile.';
-  return memoField('sec-combined','',hint,'',160,'sec_combined');
+  return memoField('sec-combined','',hint,'',160,'sec_combined')
+    +_memoImportBtn('sec_combined','mf-sec-combined');
 }
 function memoSet(k,v){const d=CD();if(d){if(!d.memo)d.memo={};d.memo[k]=v;}}
 function memoIncl(k){const d=CD();return d?.memo?.['_incl_field_'+k]!==false;}
