@@ -469,13 +469,16 @@ body{font-family:var(--sans);background:var(--bg);color:var(--ink);font-size:14p
 .profile-modal-hd p{font-size:0.78rem;color:rgba(255,255,255,0.45)}
 .profile-modal-body{padding:24px 28px;overflow-y:auto;flex:1}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
 const SUPABASE_URL='https://mqovtzuyerhqyywncuce.supabase.co';
 const SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xb3Z0enV5ZXJocXl5d25jdWNlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcxMDgzODcsImV4cCI6MjA5MjY4NDM4N30.mPP7PPIQLF7a86O03qbVEJ53cJenPspbVucIAw7qgYE';
 const _supa=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
-let BROKER_ID=null;   // Set after login
+let BROKER_ID=null;   // Set after login — the actual authenticated user
 let BROKER_EMAIL=null; // Set after login
+let EFFECTIVE_BROKER_ID=null; // The account whose data/subscription we operate on — same as BROKER_ID for owners, the owner's id for invited team members
+let TEAM_ROLE='owner'; // 'owner' | 'member' — resolved in resolveTeamContext()
+let TEAM_MEMBERS=[];   // Owner-only: list of invited/active team members, loaded into the Team panel
 </script>
 
 </head>
@@ -633,8 +636,8 @@ let BROKER_EMAIL=null; // Set after login
 <div class="profile-screen" id="profileScreen" style="display:none;visibility:hidden;position:fixed;inset:0;z-index:500;background:rgba(0,0,0,0.44);align-items:center;justify-content:center">
   <div class="profile-modal">
     <div class="profile-modal-hd">
-      <h2>Broker <em style="font-style:italic;color:var(--gold)">Profile</em></h2>
-      <p>This information is stored locally and auto-populates every application and PDF export.</p>
+      <h2>Account <em style="font-style:italic;color:var(--gold)">Settings</em></h2>
+      <p>Your profile auto-populates every application and PDF export. Billing and team access are managed below.</p>
     </div>
     <div class="profile-modal-body">
       <div class="fg"><label class="fl">Full Name</label><input class="fi" id="prof-name" type="text" placeholder="Your full name"/></div>
@@ -663,6 +666,33 @@ let BROKER_EMAIL=null; // Set after login
         </div>
       </div>
       <div id="brand-colour-swatches" style="display:none;background:var(--bg);border-radius:8px;padding:10px 12px;margin-top:8px;border:1px solid var(--rule)"></div>
+
+      <!-- BILLING — owner only. -->
+      <div id="billing-panel-owner" style="display:none;margin-top:26px;padding-top:20px;border-top:1px solid var(--rule)">
+        <div style="font-family:var(--serif);font-size:1.1rem;color:#0D1F3C;margin-bottom:4px">Billing</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+          <div class="fh" id="billing-status-text">Checking subscription status…</div>
+          <button class="btn btn-ghost btn-sm" onclick="openBillingPortal()" style="white-space:nowrap">Manage Subscription →</button>
+        </div>
+        <div id="billing-error" style="font-size:0.78rem;margin-top:8px;color:#cc2222"></div>
+      </div>
+
+      <!-- TEAM — owner only. Invite/remove support staff who share this account's data. -->
+      <div id="team-panel-owner" style="display:none;margin-top:26px;padding-top:20px;border-top:1px solid var(--rule)">
+        <div style="font-family:var(--serif);font-size:1.1rem;color:#0D1F3C;margin-bottom:4px">Team</div>
+        <div class="fh" style="margin-bottom:12px">Add support staff who can log in and work on your applications ($15/month per additional user, billed with your subscription). They get their own login and MFA, but can't manage billing or the team.</div>
+        <div id="team-member-list" style="margin-bottom:12px"></div>
+        <div style="display:flex;gap:8px">
+          <input id="team-invite-email" type="email" placeholder="colleague@yourbrokerage.com.au" class="fi" style="flex:1"/>
+          <button class="btn btn-primary btn-sm" onclick="inviteTeamMember()" style="white-space:nowrap">＋ Invite ($15/mo)</button>
+        </div>
+        <div id="team-error" style="font-size:0.78rem;margin-top:8px;color:#cc2222"></div>
+      </div>
+
+      <!-- TEAM — member view. Read-only reminder of whose account this is. -->
+      <div id="team-panel-member" style="display:none;margin-top:26px;padding-top:20px;border-top:1px solid var(--rule)">
+        <div class="notice nw">You're working on <strong id="team-owner-label">the account owner's</strong> account as a team member. Billing and team management are handled by the account owner.</div>
+      </div>
     </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;padding:14px 28px;border-top:1px solid var(--rule);background:var(--white);flex-shrink:0">
       <button class="btn btn-ghost" onclick="closeProfile()" id="profileCancelBtn" style="display:none">Cancel</button>
@@ -803,6 +833,75 @@ let BROKER_EMAIL=null; // Set after login
           </div>
         </div>
 
+        <!-- Team member state: billing is the owner's responsibility, not theirs -->
+        <div id="payment-panel-member" style="display:none;text-align:center">
+          <div style="font-size:2.2rem;margin-bottom:16px">⏸</div>
+          <div style="font-family:var(--serif);font-size:1.4rem;color:#0D1F3C;margin-bottom:8px">Account access paused</div>
+          <div style="font-size:0.82rem;color:#8A8077;margin-bottom:24px;line-height:1.65">The subscription on this account isn't active. Ask your account owner to check their billing — you don't need to do anything here.</div>
+          <button onclick="recheckSubscription()" class="btn-cta-outline">
+            Check again
+          </button>
+          <div style="margin-top:24px;padding-top:20px;border-top:1px solid #f0ede8">
+            <button onclick="doLogout()" style="background:none;border:none;color:#bbb;font-size:0.75rem;cursor:pointer;font-family:inherit">Sign out</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="screen" id="mfaScreen">
+  <div style="min-height:100vh;display:flex;align-items:stretch">
+    <!-- Left panel -->
+    <div style="flex:1;background:#0D1F3C;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px;min-height:100vh">
+      <img id="mfaLogo" src="" style="width:280px;max-width:85%;object-fit:contain;margin-bottom:32px" alt="MyBrokerBase"/>
+      <div style="max-width:320px;text-align:center">
+        <div style="font-size:1.1rem;color:rgba(255,255,255,0.9);font-weight:600;margin-bottom:12px;line-height:1.5">Two-factor verification</div>
+        <div style="font-size:0.82rem;color:rgba(255,255,255,0.45);line-height:1.7">MyBrokerBase requires SMS verification on every sign-in to keep client financial data secure.</div>
+      </div>
+    </div>
+    <!-- Right panel -->
+    <div style="flex:1;background:white;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px;min-height:100vh">
+      <div style="width:100%;max-width:380px">
+
+        <!-- ENROLL PANEL: mandatory first-time phone setup -->
+        <div id="mfa-panel-enroll">
+          <div style="margin-bottom:28px">
+            <div style="font-family:var(--serif);font-size:1.6rem;color:#0D1F3C;margin-bottom:6px">Secure your account</div>
+            <div style="font-size:0.82rem;color:#8A8077;line-height:1.6">MyBrokerBase now requires SMS verification at every sign-in. Add your mobile number to continue — you'll only need to do this once.</div>
+          </div>
+          <div style="margin-bottom:28px">
+            <label style="display:block;font-size:0.78rem;font-weight:600;color:#0D1F3C;margin-bottom:6px">Mobile number</label>
+            <input id="mfaPhoneInput" type="tel" placeholder="+61 4XX XXX XXX" style="width:100%;padding:11px 14px;border:1.5px solid #E2DDD5;border-radius:8px;font-size:0.9rem;box-sizing:border-box;outline:none;font-family:inherit" onkeydown="if(event.key==='Enter')submitMfaEnrollPhone()"/>
+            <div style="font-size:0.72rem;color:#bbb;margin-top:6px">Include the country code, e.g. +61412345678</div>
+          </div>
+          <button onclick="submitMfaEnrollPhone()" class="btn-cta btn-cta-navy">Send verification code</button>
+          <div style="text-align:center;margin-top:20px">
+            <span onclick="cancelMfaAndSignOut()" style="font-size:0.75rem;color:#8A8077;cursor:pointer;text-decoration:underline">Sign out</span>
+          </div>
+        </div>
+
+        <!-- VERIFY PANEL: enter the code just sent -->
+        <div id="mfa-panel-verify" style="display:none">
+          <div style="margin-bottom:28px">
+            <div style="font-family:var(--serif);font-size:1.6rem;color:#0D1F3C;margin-bottom:6px">Enter your code</div>
+            <div style="font-size:0.82rem;color:#8A8077;line-height:1.6" id="mfaVerifySub">Enter the 6-digit code we sent to your phone.</div>
+          </div>
+          <div style="margin-bottom:28px">
+            <label style="display:block;font-size:0.78rem;font-weight:600;color:#0D1F3C;margin-bottom:6px">Verification code</label>
+            <input id="mfaCodeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="width:100%;padding:11px 14px;border:1.5px solid #E2DDD5;border-radius:8px;font-size:1.1rem;letter-spacing:3px;text-align:center;box-sizing:border-box;outline:none;font-family:inherit" onkeydown="if(event.key==='Enter')submitMfaVerifyCode()"/>
+          </div>
+          <button onclick="submitMfaVerifyCode()" class="btn-cta btn-cta-navy">Verify &amp; continue</button>
+          <div style="text-align:center;margin-top:16px">
+            <span onclick="resendMfaCode()" style="font-size:0.75rem;color:#8A8077;cursor:pointer;text-decoration:underline">Resend code</span>
+          </div>
+          <div style="text-align:center;margin-top:8px">
+            <span onclick="cancelMfaAndSignOut()" style="font-size:0.75rem;color:#8A8077;cursor:pointer;text-decoration:underline">Sign out</span>
+          </div>
+        </div>
+
+        <div id="mfaError" style="font-size:0.78rem;margin-top:14px;text-align:center;min-height:20px;color:#cc2222"></div>
       </div>
     </div>
   </div>
@@ -1071,11 +1170,18 @@ let BROKER_EMAIL=null; // Set after login
         <div class="page-title">Entity <em>Library</em></div>
         <div class="page-desc">All entities in this client group. Toggle active/inactive for this specific application. Entities carry their financials across all applications in the group.</div>
         <div class="notice ni">💡 Entities are shared across all applications in the <strong id="group-name-display">this group</strong>. Adding an entity here makes it available to every deal.</div>
-        <div style="display:flex;gap:9px;margin-bottom:14px;flex-wrap:wrap">
-          <button class="btn btn-blue" onclick="openEntityModal()">＋ Add Business Entity</button>
-          <button class="btn btn-gold" onclick="openIndivModal()">＋ Add Individual</button>
+        <div style="display:flex;gap:9px;margin-bottom:14px;flex-wrap:wrap;align-items:center;justify-content:space-between">
+          <div style="display:flex;gap:9px;flex-wrap:wrap">
+            <button class="btn btn-blue" onclick="openEntityModal()">＋ Add Business Entity</button>
+            <button class="btn btn-gold" onclick="openIndivModal()">＋ Add Individual</button>
+          </div>
+          <div class="assess-wrap" style="margin:0">
+            <button class="assess-btn on" id="lib-view-list-btn" onclick="setLibraryView('list')">☰ List</button>
+            <button class="assess-btn" id="lib-view-tree-btn" onclick="setLibraryView('tree')">🌳 Ownership Tree</button>
+          </div>
         </div>
         <div id="libList"><div class="notice nw" id="libEmpty">No entities added yet.</div></div>
+        <div id="libTree" style="display:none"></div>
       </div>
 
       <!-- ── REQUEST ── -->
@@ -1512,12 +1618,12 @@ function CAL(){ // active library (group entities filtered by deal active set)
 // SUBSCRIPTION MANAGEMENT
 // ════════════════════════════════════════════════════
 async function checkSubscription(){
-  if(!BROKER_ID)return false;
+  if(!EFFECTIVE_BROKER_ID)return false;
   try{
     const{data,error}=await _supa
       .from('subscriptions')
       .select('status')
-      .eq('user_id',BROKER_ID)
+      .eq('user_id',EFFECTIVE_BROKER_ID)
       .single();
     if(error||!data)return false;
     return['active','trialing'].includes(data.status);
@@ -1527,7 +1633,49 @@ async function checkSubscription(){
   }
 }
 
+// Resolves whether the logged-in user is an account owner or an invited team
+// member, and sets EFFECTIVE_BROKER_ID to whichever account's data/subscription
+// should be used. Must run before any data load or subscription check.
+async function resolveTeamContext(){
+  EFFECTIVE_BROKER_ID=BROKER_ID;
+  TEAM_ROLE='owner';
+  if(!BROKER_ID)return;
+  try{
+    const{data,error}=await _supa.from('team_members')
+      .select('owner_id,status')
+      .eq('member_id',BROKER_ID)
+      .in('status',['active','invited'])
+      .maybeSingle();
+    if(error||!data?.owner_id)return;
+    if(data.status==='invited'){
+      // First login after accepting the invite email — flip membership to active.
+      const{data:acceptData,error:acceptErr}=await _supa.functions.invoke('team-manage',{body:{action:'accept'}});
+      if(acceptErr||acceptData?.error){console.warn('Team invite accept failed:',acceptErr||acceptData.error);return;}
+    }
+    EFFECTIVE_BROKER_ID=data.owner_id;
+    TEAM_ROLE='member';
+  }catch(e){
+    console.warn('Team context check failed:',e);
+  }
+}
+
 function showPaymentWall(polling=false){
+  if(TEAM_ROLE==='member'){
+    // Team members can't manage billing — the owner's subscription must be reactivated instead.
+    const defPanel=document.getElementById('payment-panel-default');
+    const pollPanel=document.getElementById('payment-panel-polling');
+    if(defPanel)defPanel.style.display='none';
+    if(pollPanel)pollPanel.style.display='none';
+    const memberPanel=document.getElementById('payment-panel-member');
+    if(memberPanel)memberPanel.style.display='block';
+    const logo=document.getElementById('paymentLogo');
+    if(logo)logo.src=APP_LOGO||'';
+    showScreen('paymentScreen');
+    if(!_pollInterval)pollForSubscription(polling);
+    return;
+  }
+  const memberPanel=document.getElementById('payment-panel-member');
+  if(memberPanel)memberPanel.style.display='none';
   const btn=document.getElementById('stripeTrialBtn');
   if(btn){
     let stripeUrl=`https://buy.stripe.com/bJe3cw5ng0NO7gE5KZ0co03?client_reference_id=${BROKER_ID}`;
@@ -1615,17 +1763,119 @@ async function doLogin(){
   if(error){errEl.textContent=error.message;return;}
   BROKER_ID=data.user.id;
   BROKER_EMAIL=data.user.email||'';
+  errEl.textContent='';
+  await routeAfterAuth();
+}
+
+// ════════════════════════════════════════════════════
+// MULTI-FACTOR AUTHENTICATION (mandatory SMS, checked on every sign-in)
+// ════════════════════════════════════════════════════
+let _mfaFactorId=null,_mfaChallengeId=null;
+
+async function routeAfterAuth(){
+  const{data:factorsData,error:factorsErr}=await _supa.auth.mfa.listFactors();
+  if(factorsErr)console.warn('MFA factor check failed:',factorsErr.message);
+  const verifiedPhone=(factorsData?.phone||[]).find(f=>f.status==='verified');
+  if(!verifiedPhone){
+    _mfaFactorId=null;_mfaChallengeId=null;
+    showScreen('mfaScreen');showMfaPanel('enroll');
+    return;
+  }
+  const{data:aal}=await _supa.auth.mfa.getAuthenticatorAssuranceLevel();
+  if(aal?.currentLevel==='aal2'){
+    await completePostAuthLoad();
+    return;
+  }
+  await beginMfaChallenge(verifiedPhone.id);
+}
+
+async function beginMfaChallenge(factorId){
+  _mfaFactorId=factorId;_mfaChallengeId=null;
+  showScreen('mfaScreen');showMfaPanel('verify');
+  const errEl=document.getElementById('mfaError');
+  if(errEl){errEl.style.color='#8A8077';errEl.textContent='Sending code…';}
+  const{data,error}=await _supa.auth.mfa.challenge({factorId});
+  if(error){if(errEl){errEl.style.color='#cc2222';errEl.textContent=error.message;}return;}
+  _mfaChallengeId=data.id;
+  if(errEl)errEl.textContent='';
+}
+
+function showMfaPanel(which){
+  const enroll=document.getElementById('mfa-panel-enroll');
+  const verify=document.getElementById('mfa-panel-verify');
+  if(enroll)enroll.style.display=which==='enroll'?'block':'none';
+  if(verify)verify.style.display=which==='verify'?'block':'none';
+  const errEl=document.getElementById('mfaError');
+  if(errEl)errEl.textContent='';
+}
+
+async function submitMfaEnrollPhone(){
+  const phone=document.getElementById('mfaPhoneInput').value.trim();
+  const errEl=document.getElementById('mfaError');
+  if(!phone){errEl.style.color='#cc2222';errEl.textContent='Enter a mobile number, e.g. +61412345678.';return;}
+  errEl.style.color='#8A8077';errEl.textContent='Sending code…';
+  const{data,error}=await _supa.auth.mfa.enroll({factorType:'phone',phone});
+  if(error){errEl.style.color='#cc2222';errEl.textContent=error.message;return;}
+  _mfaFactorId=data.id;
+  const{data:ch,error:chErr}=await _supa.auth.mfa.challenge({factorId:data.id});
+  if(chErr){errEl.style.color='#cc2222';errEl.textContent=chErr.message;return;}
+  _mfaChallengeId=ch.id;
+  errEl.textContent='';
+  const sub=document.getElementById('mfaVerifySub');
+  if(sub)sub.textContent='Enter the code we sent to '+phone;
+  showMfaPanel('verify');
+}
+
+async function submitMfaVerifyCode(){
+  const code=document.getElementById('mfaCodeInput').value.trim();
+  const errEl=document.getElementById('mfaError');
+  if(!code){errEl.style.color='#cc2222';errEl.textContent='Enter the 6-digit code.';return;}
+  if(!_mfaFactorId||!_mfaChallengeId){errEl.style.color='#cc2222';errEl.textContent='Verification session expired — please sign in again.';return;}
+  errEl.style.color='#8A8077';errEl.textContent='Verifying…';
+  const{error}=await _supa.auth.mfa.verify({factorId:_mfaFactorId,challengeId:_mfaChallengeId,code});
+  if(error){errEl.style.color='#cc2222';errEl.textContent=error.message;return;}
+  errEl.textContent='';
+  _mfaChallengeId=null;
+  await completePostAuthLoad();
+}
+
+async function resendMfaCode(){
+  const errEl=document.getElementById('mfaError');
+  if(!_mfaFactorId){errEl.style.color='#cc2222';errEl.textContent='Nothing to resend — please sign in again.';return;}
+  errEl.style.color='#8A8077';errEl.textContent='Resending…';
+  const{data,error}=await _supa.auth.mfa.challenge({factorId:_mfaFactorId});
+  if(error){errEl.style.color='#cc2222';errEl.textContent=error.message;return;}
+  _mfaChallengeId=data.id;
+  errEl.style.color='var(--green)';
+  errEl.textContent='Code resent.';
+}
+
+async function cancelMfaAndSignOut(){
+  _mfaFactorId=null;_mfaChallengeId=null;
+  await doLogout();
+}
+
+async function completePostAuthLoad(){
+  await resolveTeamContext();
   GROUPS=[]; nId=1; nGId=1; nDId=1; nFId=1; nDbId=1;
   await loadFromSupabase();
   if(!GROUPS.length) loadFromStorage();
   migrateOldData();
-  const [,hasSub]=await Promise.all([loadProfileFromSupabase(),checkSubscription()]);
-  if(!hasSub){showPaymentWall();return;}
   document.getElementById('profileScreen')?.classList.remove('open');
+  const [,hasSub]=await Promise.all([loadProfileFromSupabase(),checkSubscription()]);
+  if(!hasSub){
+    const urlParams=new URLSearchParams(window.location.search);
+    if(urlParams.get('payment')==='success'){
+      showPaymentWall(true);
+      pollForSubscription();
+    }else{
+      showPaymentWall(false);
+    }
+    return;
+  }
   showScreen('homeScreen');
   renderHome();
   updateBadges();
-  errEl.textContent='';
 }
 async function doSignUp(){
   const name=document.getElementById('signupName').value.trim();
@@ -1659,8 +1909,12 @@ async function doLogout(){
   await _supa.auth.signOut();
   BROKER_ID=null;
   BROKER_EMAIL=null;
+  EFFECTIVE_BROKER_ID=null;
+  TEAM_ROLE='owner';
+  TEAM_MEMBERS=[];
   GROUPS=[];
   nId=1;nGId=1;nDId=1;nFId=1;nDbId=1;
+  _mfaFactorId=null;_mfaChallengeId=null;
   showScreen('loginScreen');
 }
 // Check if already logged in on page load
@@ -1669,27 +1923,7 @@ async function checkExistingSession(){
   if(data?.session){
     BROKER_ID=data.session.user.id;
     BROKER_EMAIL=data.session.user.email||'';
-    GROUPS=[]; nId=1; nGId=1; nDId=1; nFId=1; nDbId=1;
-    await loadFromSupabase();
-    if(!GROUPS.length) loadFromStorage();
-    migrateOldData();
-    document.getElementById('profileScreen')?.classList.remove('open');
-    // Run profile load and subscription check in parallel — saves one round-trip
-    const [,hasSub]=await Promise.all([loadProfileFromSupabase(),checkSubscription()]);
-    if(!hasSub){
-      const urlParams=new URLSearchParams(window.location.search);
-      if(urlParams.get('payment')==='success'){
-        // Returning from Stripe — show polling screen and wait for webhook
-        showPaymentWall(true);
-        pollForSubscription();
-      }else{
-        showPaymentWall(false);
-      }
-      return;
-    }
-    showScreen('homeScreen');
-    renderHome();
-    updateBadges();
+    await routeAfterAuth();
     return;
   }
   // No session — stay on login screen, check for signup param
@@ -1704,10 +1938,10 @@ function loadProfile(){
 }
 
 async function loadProfileFromSupabase(){
-  if(!BROKER_ID||!_supa)return;
+  if(!EFFECTIVE_BROKER_ID||!_supa)return;
   try{
     const{data,error}=await _supa.from('broker_data')
-      .select('data').eq('broker_id',BROKER_ID+'_profile').single();
+      .select('data').eq('broker_id',EFFECTIVE_BROKER_ID+'_profile').single();
     if(!error&&data?.data){
       const p=JSON.parse(data.data);
       if(p.name){
@@ -1877,8 +2111,104 @@ function openProfile(){
   }
   const hasGroups=GROUPS.length>0||currentGroupId;
   document.getElementById('profileCancelBtn').style.display=hasGroups?'':'none';
+  renderTeamPanel();
   const ps=document.getElementById('profileScreen');ps.style.display='flex';ps.style.visibility='visible';ps.classList.add('open');
 }
+// ════════════════════════════════════════════════════
+// TEAM MANAGEMENT — invite/remove support-staff logins that share this account's data.
+// Invite/remove go through the team-manage Edge Function because both need the
+// Supabase service-role key (to create the auth user) and the Stripe secret key
+// (to add/remove the $15/mo seat on the subscription) — neither can live in browser code.
+// ════════════════════════════════════════════════════
+async function renderTeamPanel(){
+  const ownerPanel=document.getElementById('team-panel-owner');
+  const memberPanel=document.getElementById('team-panel-member');
+  const billingPanel=document.getElementById('billing-panel-owner');
+  if(TEAM_ROLE==='member'){
+    if(ownerPanel)ownerPanel.style.display='none';
+    if(memberPanel)memberPanel.style.display='block';
+    if(billingPanel)billingPanel.style.display='none';
+    return;
+  }
+  if(memberPanel)memberPanel.style.display='none';
+  if(ownerPanel)ownerPanel.style.display='block';
+  if(billingPanel)billingPanel.style.display='block';
+  await Promise.all([loadTeamMembers(),loadBillingStatus()]);
+}
+
+async function loadBillingStatus(){
+  const statusEl=document.getElementById('billing-status-text');
+  if(!statusEl||!BROKER_ID)return;
+  statusEl.textContent='Checking subscription status…';
+  const{data,error}=await _supa.from('subscriptions').select('status').eq('user_id',BROKER_ID).maybeSingle();
+  if(error||!data){statusEl.textContent='No active subscription found.';return;}
+  const labels={active:'Active subscription',trialing:'Free trial active',canceled:'Subscription cancelled',past_due:'Payment past due'};
+  statusEl.textContent=labels[data.status]||('Status: '+data.status);
+}
+
+async function openBillingPortal(){
+  const errEl=document.getElementById('billing-error');
+  if(errEl){errEl.style.color='#8A8077';errEl.textContent='Opening billing portal…';}
+  const{data,error}=await _supa.functions.invoke('stripe-portal',{});
+  if(error||data?.error||!data?.url){
+    if(errEl){errEl.style.color='#cc2222';errEl.textContent=(data&&data.error)||(error&&error.message)||'Could not open billing portal.';}
+    return;
+  }
+  window.location.href=data.url;
+}
+
+async function loadTeamMembers(){
+  const listEl=document.getElementById('team-member-list');
+  if(!listEl||!BROKER_ID)return;
+  const{data,error}=await _supa.from('team_members')
+    .select('id,member_email,status,invited_at')
+    .eq('owner_id',BROKER_ID)
+    .order('invited_at',{ascending:true});
+  if(error){listEl.innerHTML='<div class="fh">Could not load team members.</div>';return;}
+  TEAM_MEMBERS=data||[];
+  if(!TEAM_MEMBERS.length){listEl.innerHTML='<div class="fh">No additional users yet.</div>';return;}
+  listEl.innerHTML=TEAM_MEMBERS.map(m=>`
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--rule)">
+      <div>
+        <div style="font-size:0.85rem;color:#0D1F3C">${esc(m.member_email)}</div>
+        <div style="font-size:0.72rem;color:var(--muted)">${m.status==='active'?'Active':'Invited — awaiting acceptance'}</div>
+      </div>
+      <button class="btn btn-danger btn-sm" onclick="removeTeamMember('${m.id}')">Remove</button>
+    </div>`).join('');
+}
+
+async function inviteTeamMember(){
+  const emailEl=document.getElementById('team-invite-email');
+  const errEl=document.getElementById('team-error');
+  const email=emailEl.value.trim();
+  if(!email){errEl.style.color='#cc2222';errEl.textContent='Enter an email address.';return;}
+  errEl.style.color='#8A8077';errEl.textContent='Sending invite…';
+  const{data,error}=await _supa.functions.invoke('team-manage',{body:{action:'invite',email}});
+  if(error||data?.error){
+    errEl.style.color='#cc2222';
+    errEl.textContent=data?.error||error.message||'Could not send invite.';
+    return;
+  }
+  errEl.style.color='var(--green)';
+  errEl.textContent='Invite sent to '+email+'.';
+  emailEl.value='';
+  await loadTeamMembers();
+}
+
+async function removeTeamMember(memberId){
+  const errEl=document.getElementById('team-error');
+  if(!confirm('Remove this user? They will immediately lose access to your applications.'))return;
+  errEl.style.color='#8A8077';errEl.textContent='Removing…';
+  const{data,error}=await _supa.functions.invoke('team-manage',{body:{action:'remove',memberId}});
+  if(error||data?.error){
+    errEl.style.color='#cc2222';
+    errEl.textContent=data?.error||error.message||'Could not remove user.';
+    return;
+  }
+  errEl.textContent='';
+  await loadTeamMembers();
+}
+
 function closeProfile(){
   const ps2=document.getElementById('profileScreen');ps2.classList.remove('open');ps2.style.display='none';ps2.style.visibility='hidden';
 }
@@ -1919,7 +2249,7 @@ function showScreen(id){
   // Show sidebar only for app screens (not login/setup/home)
   const sidebar=document.querySelector('.sidebar');
   if(sidebar){
-    const noSidebarScreens=['loginScreen','paymentScreen','homeScreen','captureScreen','clientScreen'];
+    const noSidebarScreens=['loginScreen','paymentScreen','mfaScreen','homeScreen','captureScreen','clientScreen'];
     sidebar.style.display=noSidebarScreens.includes(id)?'none':'';
   }
 }
@@ -2112,7 +2442,7 @@ function createDealInGroup(gId,dealName,isNewGroup,dealType){
   currentGroupId=gId; currentDealId=dId;
   if(isNewGroup)g._showWelcome=true;
   saveToStorage();
-  goToApp(isNewGroup?'library':'basecamp');
+  goToApp('basecamp');
   toast('Created: '+dealName);
 }
 function newDealObj(id,name){
@@ -2551,7 +2881,142 @@ function confirmIndiv(){
 
 
 
+// ════════════════════════════════════════════════════
+// OWNERSHIP TREE — reads the shareholding (entity→individual, equity %) and
+// entity-flow (entity→entity, distribution) data already captured in BaseCamp's
+// Financial Analysis tab and renders it as a family-tree-style diagram. Shared
+// between the Entity Library "Tree View" and the credit memo PDF export.
+// ════════════════════════════════════════════════════
+let _libView='list';
+function setLibraryView(view){
+  _libView=view;
+  renderLibrary();
+}
+function renderLibraryTree(){
+  const treeEl=document.getElementById('libTree'); if(!treeEl)return;
+  const g=CG();
+  if(!g||!g.entities.length){treeEl.innerHTML='<div class="notice nw">No entities added yet.</div>';return;}
+  treeEl.innerHTML=`<div class="card" style="padding:20px">${renderOwnershipTreeSVG(g)}</div>`;
+}
+function escSvg(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function buildOwnershipGraph(g){
+  const individuals=(g.entities||[]).filter(x=>x.kind==='individual');
+  const entities=(g.entities||[]).filter(x=>x.kind==='entity');
+  const edges=[]; // {from,to,label,kind:'equity'|'flow'}
+  const equityPairs=new Set();
+  entities.forEach(e=>{
+    (e.pl?.shareholders||[]).forEach(sh=>{
+      if(sh.entityId&&sh.pct){
+        edges.push({from:+sh.entityId,to:e.id,label:(+sh.pct)+'%',kind:'equity'});
+        equityPairs.add(sh.entityId+'>'+e.id);
+      }
+    });
+    // Entity → entity distribution chains (e.g. a trust distributing to a company it doesn't hold equity in).
+    (e.pl?.entityFlows||[]).forEach(fl=>{
+      if(fl.toId) edges.push({from:e.id,to:fl.toId,label:'Distributes to',kind:'flow'});
+    });
+    // Entity → individual distributions captured via the allocation table. Skipped when an
+    // equity edge already links the same pair, so a straight shareholder isn't double-drawn.
+    const fy2total=+e.pl?.fy2?.dist||0;
+    (e.pl?.allocations?.fy1||[]).forEach(a=>{
+      if(!a.toKey||!a.toKey.startsWith('i-'))return;
+      const toId=parseInt(a.toKey.slice(2));
+      if(!toId||equityPairs.has(e.id+'>'+toId))return;
+      const pct=fy2total>0?Math.round((+a.fy2||0)/fy2total*100):null;
+      edges.push({from:e.id,to:toId,label:pct!==null?`Distributes to (${pct}%)`:'Distributes to',kind:'flow'});
+    });
+  });
+  // Entities are layered purely by entity-to-entity chains (e.g. a trust that feeds a
+  // company sits a tier above it), independent of individuals entirely. A root entity —
+  // one nothing else distributes into — gets tier 0 (the top). Individuals always sit in a
+  // single tier below every entity, however many hops their nearest connection is away, so
+  // "entities on top, individuals at the bottom" holds regardless of chain depth.
+  const entityIdSet=new Set(entities.map(e=>e.id));
+  const entityDepth={};
+  entities.forEach(e=>entityDepth[e.id]=0);
+  let changed=true,guard=0;
+  while(changed&&guard++<200){
+    changed=false;
+    edges.forEach(ed=>{
+      if(ed.kind==='flow'&&entityIdSet.has(ed.from)&&entityIdSet.has(ed.to)){
+        const nd=(entityDepth[ed.from]||0)+1;
+        if(nd>(entityDepth[ed.to]||0)){entityDepth[ed.to]=nd;changed=true;}
+      }
+    });
+  }
+  const maxEntityDepth=entities.length?Math.max(...entities.map(e=>entityDepth[e.id]||0)):0;
+  const linkedIds=new Set(edges.flatMap(ed=>[ed.from,ed.to]));
+  const unlinkedEntities=entities.filter(e=>!linkedIds.has(e.id));
+  return{individuals,entities,edges,entityDepth,maxEntityDepth,unlinkedEntities};
+}
+function renderOwnershipTreeSVG(g,forPdf){
+  const nodeW=150,nodeH=54,rowGap=110,colGap=26;
+  const{individuals,entities,edges,entityDepth,maxEntityDepth,unlinkedEntities}=buildOwnershipGraph(g);
+  if(!individuals.length&&!entities.length)return'<div class="notice nw">No entities added yet.</div>';
+  const rows={};
+  // Entities occupy rows 0..maxEntityDepth (row 0 = top, no entity feeds it); individuals
+  // always sit one row below the deepest entity tier, all together, regardless of how many
+  // hops away their nearest connection is.
+  entities.forEach(e=>{
+    const dep=entityDepth[e.id]||0;
+    (rows[dep]=rows[dep]||[]).push({id:e.id,name:e.name,type:e.type,kind:'entity'});
+  });
+  const individualRow=maxEntityDepth+1;
+  individuals.forEach(i=>{(rows[individualRow]=rows[individualRow]||[]).push({id:i.id,name:i.name,type:'Individual',kind:'individual'});});
+  const rowKeys=Object.keys(rows).map(Number).sort((a,b)=>a-b);
+  const maxCols=Math.max(...rowKeys.map(r=>rows[r].length),1);
+  const svgWidth=Math.max(760,maxCols*(nodeW+colGap));
+  const pos={};
+  rowKeys.forEach(r=>{
+    const items=rows[r];
+    const rowW=items.length*(nodeW+colGap)-colGap;
+    const startX=(svgWidth-rowW)/2;
+    items.forEach((it,i)=>{pos[it.id]={x:startX+i*(nodeW+colGap),y:r*rowGap+20,item:it};});
+  });
+  const svgHeight=rowKeys.length*rowGap+nodeH+40;
+  const nodeSVG=Object.values(pos).map(p=>{
+    const it=p.item;
+    const isIndiv=it.kind==='individual';
+    return`<g>
+      <rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="8" fill="${isIndiv?'#0D1F3C':'#FFF8F3'}" stroke="${isIndiv?'#0D1F3C':'#F47920'}" stroke-width="1.5"/>
+      <text x="${p.x+nodeW/2}" y="${p.y+23}" text-anchor="middle" font-size="12" font-weight="700" fill="${isIndiv?'#fff':'#0D1F3C'}" font-family="Arial">${escSvg(it.name).slice(0,22)}</text>
+      <text x="${p.x+nodeW/2}" y="${p.y+39}" text-anchor="middle" font-size="9.5" fill="${isIndiv?'#c9d3e0':'#8A8077'}" font-family="Arial">${escSvg(it.type)}</text>
+    </g>`;
+  }).join('');
+  const edgeSVG=edges.map(ed=>{
+    const a=pos[ed.from],b=pos[ed.to];
+    if(!a||!b)return'';
+    // Connect whichever node is physically higher on the page to whichever is lower —
+    // independent of edge direction, since rendering now inverts row order.
+    const top=a.y<=b.y?a:b, bottom=a.y<=b.y?b:a;
+    const x1=top.x+nodeW/2,y1=top.y+nodeH,x2=bottom.x+nodeW/2,y2=bottom.y;
+    const midY=(y1+y2)/2;
+    const dash=ed.kind==='flow'?' stroke-dasharray="4,3"':'';
+    const stroke=ed.kind==='flow'?'#8A8077':'#F47920';
+    return`<path d="M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}" fill="none" stroke="${stroke}" stroke-width="1.5"${dash}/>
+      <rect x="${(x1+x2)/2-24}" y="${midY-9}" width="48" height="16" rx="3" fill="#fff" stroke="${stroke}" stroke-width="1"/>
+      <text x="${(x1+x2)/2}" y="${midY+3}" text-anchor="middle" font-size="8.5" fill="${stroke}" font-family="Arial">${escSvg(ed.label)}</text>`;
+  }).join('');
+  const legend=`<div style="display:flex;gap:16px;margin-bottom:10px;font-size:0.75rem;color:var(--muted)">
+    <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#0D1F3C;margin-right:5px;vertical-align:middle"></span>Individual</span>
+    <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#FFF8F3;border:1.5px solid #F47920;margin-right:5px;vertical-align:middle"></span>Entity</span>
+    <span>— Solid line: equity ownership · Dashed line: distribution flow —</span>
+  </div>`;
+  const unlinkedHtml=unlinkedEntities.length?`<div class="fh" style="margin-top:10px">Not yet linked to an owner: ${unlinkedEntities.map(e=>esc(e.name)).join(', ')}. Add shareholders in BaseCamp → Financial Analysis to include them here.</div>`:'';
+  const svgTag=forPdf
+    ?`<svg width="100%" height="${Math.round(svgHeight*(680/svgWidth))}" viewBox="0 0 ${svgWidth} ${svgHeight}" xmlns="http://www.w3.org/2000/svg" style="font-family:Arial">${edgeSVG}${nodeSVG}</svg>`
+    :`<svg width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" xmlns="http://www.w3.org/2000/svg" style="font-family:Arial">${edgeSVG}${nodeSVG}</svg>`;
+  return`${legend}<div style="${forPdf?'':'overflow-x:auto'}">${svgTag}</div>${unlinkedHtml}`;
+}
+
 function renderLibrary(){
+  document.getElementById('lib-view-list-btn')?.classList.toggle('on',_libView==='list');
+  document.getElementById('lib-view-tree-btn')?.classList.toggle('on',_libView==='tree');
+  const listWrap=document.getElementById('libList');
+  const treeWrap=document.getElementById('libTree');
+  if(listWrap)listWrap.style.display=_libView==='list'?'':'none';
+  if(treeWrap)treeWrap.style.display=_libView==='tree'?'':'none';
+  if(_libView==='tree')renderLibraryTree();
   const container=document.getElementById('libList');
   container.innerHTML='';
   document.getElementById('libEmpty')?.remove();
@@ -5623,11 +6088,12 @@ function buildCPIMemoFields(cpi){
 const MEMO_SECS=[
   {id:'request',num:1,title:'Request Summary',auto:true},
   {id:'background',num:2,title:'Background & History',special:'background'},
-  {id:'financial',num:3,title:'Financial Analysis',fields:[{id:'analysis',label:'Financial Analysis',hint:'Cover: results and trends across years reviewed; material variances and cashflow impacts; cash driver analysis (sales, COGS, OpEx, debtors, inventory, payables, capex, drawings, ATO); key ratios (Working Capital CA/CL, Operating Leverage Debt/EBITDA, CAR TNW/Total Tangible Assets); and sustainability of income streams.'}]},
-  {id:'risks',num:4,title:'Risks & Mitigants',special:'risks'},
-  {id:'primary',num:5,title:'Primary Exit',special:'primary'},
-  {id:'secondary',num:6,title:'Secondary Exit',special:'secondary'},
-  {id:'recommendation',num:7,title:'Recommendation',fields:[{id:'overall',label:'Recommendation',hint:'Provide 3C commentary (Character, Capacity, Collateral) and overall recommendation to approve, decline or refer with supporting rationale.'}]},
+  {id:'structure',num:3,title:'Ownership Structure',special:'structure'},
+  {id:'financial',num:4,title:'Financial Analysis',fields:[{id:'analysis',label:'Financial Analysis',hint:'Cover: results and trends across years reviewed; material variances and cashflow impacts; cash driver analysis (sales, COGS, OpEx, debtors, inventory, payables, capex, drawings, ATO); key ratios (Working Capital CA/CL, Operating Leverage Debt/EBITDA, CAR TNW/Total Tangible Assets); and sustainability of income streams.'}]},
+  {id:'risks',num:5,title:'Risks & Mitigants',special:'risks'},
+  {id:'primary',num:6,title:'Primary Exit',special:'primary'},
+  {id:'secondary',num:7,title:'Secondary Exit',special:'secondary'},
+  {id:'recommendation',num:8,title:'Recommendation',fields:[{id:'overall',label:'Recommendation',hint:'Provide 3C commentary (Character, Capacity, Collateral) and overall recommendation to approve, decline or refer with supporting rationale.'}]},
 ];
 // Note: CPI commentary (Property Overview, Tenancy Assessment, ICR etc.) lives in the
 // Commercial Property Investment module, not here — no need to duplicate it in the memo.
@@ -5661,7 +6127,7 @@ function renderMemo(){
         </div>
       </div>
       <div class="memo-body" id="mb-${s.id}" style="${incl?'':'opacity:0.5;pointer-events:none'}">
-        ${s.auto?buildReqSummary():s.special==='risks'?buildRiskSection(s.id):s.special==='background'?buildBackgroundSection():s.special==='primary'?buildPrimarySection():s.special==='secondary'?buildSecondarySection():s.special==='cpi'?buildCPIMemoSection():buildMemoFields(s)}
+        ${s.auto?buildReqSummary():s.special==='risks'?buildRiskSection(s.id):s.special==='background'?buildBackgroundSection():s.special==='structure'?buildStructureSection():s.special==='primary'?buildPrimarySection():s.special==='secondary'?buildSecondarySection():s.special==='cpi'?buildCPIMemoSection():buildMemoFields(s)}
         <button class="memo-done-btn" onclick="doneMemo('${s.id}')">✓ Mark Complete</button>
       </div>`;
     container.appendChild(div);
@@ -5865,6 +6331,12 @@ function buildBackgroundSection(){
   const g=CG(); const groupBg=g?.background||'';
   const d=CD(); const hint=`Cover the following:\n• Customer track record — relationship length, repayment history, facility conduct\n• What does the business do? How long operating? What industry?\n• Key customers and suppliers — any concentration risk?\n• Success factors and key challenges\n• Key contact (name, role, contact details)\n• Other material issues — Google search, trade disruptions, litigation, ATO debts\n• Corporate/family structure — ownership and control`;
   return `<div class="fg"><label class="fl">Background & History</label><div class="fh" style="margin-bottom:6px;white-space:pre-line">${hint}</div><textarea class="fta" style="min-height:160px" id="mf-background-main" oninput="memoSet('background_main',this.value)">${d?.memo?.background_main||groupBg||''}</textarea>${_memoImportBtn('background_main','mf-background-main')}</div>`;
+}
+function buildStructureSection(){
+  const g=CG();
+  if(!g)return'<div class="notice nw">No application loaded.</div>';
+  const tree=renderOwnershipTreeSVG(g);
+  return`<div class="fh" style="margin-bottom:8px">Auto-generated from the shareholding and distribution data captured in BaseCamp → Financial Analysis for each entity. Update it there — this section always reflects the latest structure.</div>${tree}`;
 }
 function buildMemoFields(s){
   return (s.fields||[]).map(f=>{
@@ -7578,14 +8050,16 @@ function getAllDebtsForEntity(eid){
 }
 
 function saveToStorage(){
+  const scopeId=EFFECTIVE_BROKER_ID||BROKER_ID;
   // Always save to localStorage as fallback
-  try{localStorage.setItem('bd_groups_'+(BROKER_ID||'anon'),JSON.stringify({groups:GROUPS,nId,nGId,nDId,nFId,nDbId}));}
+  try{localStorage.setItem('bd_groups_'+(scopeId||'anon'),JSON.stringify({groups:GROUPS,nId,nGId,nDId,nFId,nDbId}));}
   catch(e){console.warn('localStorage full — data not saved locally');toast('⚠ Local storage full — data may not persist');}
-  // Also save to Supabase if broker is logged in
-  if(BROKER_ID){
+  // Also save to Supabase if broker is logged in — writes to the account owner's row,
+  // so invited team members save into the same shared data set.
+  if(scopeId){
     const payload={groups:GROUPS,nId,nGId,nDId,nFId,nDbId};
     _supa.from('broker_data')
-      .upsert({broker_id:BROKER_ID,data:payload,updated_at:new Date().toISOString()},{onConflict:'broker_id'})
+      .upsert({broker_id:scopeId,data:payload,updated_at:new Date().toISOString()},{onConflict:'broker_id'})
       .then(({error})=>{
         if(error){
           console.warn('Supabase save error:',error.message);
@@ -7677,20 +8151,21 @@ function migrateOldData(){
 function loadFromStorage(){
   // Load from localStorage immediately so app feels instant
   try{
-    const raw=localStorage.getItem('bd_groups_'+(BROKER_ID||'anon'));
+    const raw=localStorage.getItem('bd_groups_'+(EFFECTIVE_BROKER_ID||BROKER_ID||'anon'));
     if(raw){const d=JSON.parse(raw);GROUPS=d.groups||[];nId=d.nId||1;nGId=d.nGId||1;nDId=d.nDId||1;nFId=d.nFId||1;nDbId=d.nDbId||1;}
   }catch(e){}
 }
 async function loadFromSupabase(){
-  if(!BROKER_ID)return;
+  const scopeId=EFFECTIVE_BROKER_ID||BROKER_ID;
+  if(!scopeId)return;
   try{
     // Clear localStorage for this user first to avoid stale data
-    const{data,error}=await _supa.from('broker_data').select('data').eq('broker_id',BROKER_ID).single();
+    const{data,error}=await _supa.from('broker_data').select('data').eq('broker_id',scopeId).single();
     if(error||!data)return;
     const d=data.data;
     GROUPS=d.groups||[];nId=d.nId||1;nGId=d.nGId||1;nDId=d.nDId||1;nFId=d.nFId||1;nDbId=d.nDbId||1;
     // Update localStorage with correct user data
-    localStorage.setItem('bd_groups_'+BROKER_ID,JSON.stringify({groups:GROUPS,nId,nGId,nDId,nFId,nDbId}));
+    localStorage.setItem('bd_groups_'+scopeId,JSON.stringify({groups:GROUPS,nId,nGId,nDId,nFId,nDbId}));
   }catch(e){console.warn('Supabase load error:',e);}
 }
 function saveGroupToFile(){
@@ -7956,6 +8431,19 @@ function _buildMemoHTML(d,g){
         ${d.meta?.purpose?`<div class="body">${esc(d.meta.purpose)}</div>`:''}
         ${g.background||memo.background_main?`<div class="body">${esc(g.background||memo.background_main)}</div>`:''}
         ${memo.background_commentary?`<div class="body">${esc(memo.background_commentary)}</div>`:''}
+      </div>`);
+    secNum++;
+  }
+
+  // ── PAGE — OWNERSHIP STRUCTURE ──
+  if(inclSec('structure')&&g.entities.length){
+    pagesArr.push(`
+      ${hdrHtml(appLine)}
+      <div class="pb">
+        <div class="sp"></div>
+        <div class="sec"><div class="sec-num">${secNum}</div><div class="sec-title">Ownership <em>Structure</em></div></div>
+        <div class="sp"></div>
+        ${renderOwnershipTreeSVG(g,true)}
       </div>`);
     secNum++;
   }
@@ -8478,6 +8966,10 @@ if(_loginLogo)_loginLogo.src=APP_LOGO||'';
 // Set logo on payment screen
 const _paymentLogo=document.getElementById('paymentLogo');
 if(_paymentLogo)_paymentLogo.src=APP_LOGO||'';
+
+// Set logo on MFA screen
+const _mfaLogoEl=document.getElementById('mfaLogo');
+if(_mfaLogoEl)_mfaLogoEl.src=APP_LOGO||'';
 
 </script>
 </body>
