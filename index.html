@@ -874,8 +874,8 @@ let TEAM_MEMBERS=[];   // Owner-only: list of invited/active team members, loade
           </div>
           <div style="margin-bottom:28px">
             <label style="display:block;font-size:0.78rem;font-weight:600;color:#0D1F3C;margin-bottom:6px">Mobile number</label>
-            <input id="mfaPhoneInput" type="tel" placeholder="+61 4XX XXX XXX" style="width:100%;padding:11px 14px;border:1.5px solid #E2DDD5;border-radius:8px;font-size:0.9rem;box-sizing:border-box;outline:none;font-family:inherit" onkeydown="if(event.key==='Enter')submitMfaEnrollPhone()"/>
-            <div style="font-size:0.72rem;color:#bbb;margin-top:6px">Include the country code, e.g. +61412345678</div>
+            <input id="mfaPhoneInput" type="tel" placeholder="04XX XXX XXX" style="width:100%;padding:11px 14px;border:1.5px solid #E2DDD5;border-radius:8px;font-size:0.9rem;box-sizing:border-box;outline:none;font-family:inherit" onkeydown="if(event.key==='Enter')submitMfaEnrollPhone()"/>
+            <div style="font-size:0.72rem;color:#bbb;margin-top:6px">Australian mobile number, e.g. 0400 000 000</div>
           </div>
           <button onclick="submitMfaEnrollPhone()" class="btn-cta btn-cta-navy">Send verification code</button>
           <div style="text-align:center;margin-top:20px">
@@ -1810,10 +1810,21 @@ function showMfaPanel(which){
   if(errEl)errEl.textContent='';
 }
 
+// Accepts Australian mobile numbers in local format (0400 000 000) or already in
+// E.164 (+61400000000) and normalizes to E.164, which is what Twilio/Supabase require.
+function normalizeAuMobile(input){
+  const digits=String(input||'').replace(/[^\d+]/g,'');
+  if(/^\+61\d{9}$/.test(digits))return digits;
+  if(/^61\d{9}$/.test(digits))return '+'+digits;
+  if(/^0\d{9}$/.test(digits))return '+61'+digits.slice(1);
+  if(/^\d{9}$/.test(digits))return '+61'+digits;
+  return null;
+}
 async function submitMfaEnrollPhone(){
-  const phone=document.getElementById('mfaPhoneInput').value.trim();
+  const raw=document.getElementById('mfaPhoneInput').value.trim();
   const errEl=document.getElementById('mfaError');
-  if(!phone){errEl.style.color='#cc2222';errEl.textContent='Enter a mobile number, e.g. +61412345678.';return;}
+  const phone=normalizeAuMobile(raw);
+  if(!phone){errEl.style.color='#cc2222';errEl.textContent='Enter a valid Australian mobile number, e.g. 0400 000 000.';return;}
   errEl.style.color='#8A8077';errEl.textContent='Sending code…';
   const{data,error}=await _supa.auth.mfa.enroll({factorType:'phone',phone});
   if(error){errEl.style.color='#cc2222';errEl.textContent=error.message;return;}
