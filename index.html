@@ -415,7 +415,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--ink);font-size:14p
 .capture-back-btn:hover{color:white}
 .capture-body{flex:1;overflow-y:auto;padding:22px 24px;background:var(--bg)}
 .capture-footer{border-top:1px solid var(--rule);padding:12px 20px;display:flex;align-items:center;justify-content:space-between;background:var(--white);flex-shrink:0}
-#captureScreen{display:flex;flex-direction:column;background:var(--bg)}
+#captureScreen{flex-direction:column;background:var(--bg)}
+#captureScreen.active{display:flex}
 .capture-debt-link-row{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--white);border:1px solid var(--rule);border-radius:7px;margin-bottom:6px}
 .import-deal-card{background:var(--bg);border:1.5px solid var(--rule);border-radius:8px;padding:12px 14px;cursor:pointer;transition:border-color .15s,background .15s;margin-bottom:8px}
 .import-deal-card:hover{border-color:var(--blue);background:var(--white)}
