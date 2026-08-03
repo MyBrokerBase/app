@@ -528,6 +528,9 @@ let TEAM_MEMBERS=[];   // Owner-only: list of invited/active team members, loade
       <div class="fg"><label class="fl">Credit Limit / Amount</label>
         <input class="fi" id="bcLoanLimit" type="number" placeholder="0"/>
       </div>
+      <div class="fg"><label class="fl">Description / Purpose <span style="font-size:0.7rem;color:var(--muted);font-weight:400">(optional)</span></label>
+        <input class="fi" id="bcLoanPurpose" type="text" placeholder="e.g. Purchase shed, Working capital"/>
+      </div>
       <div style="margin:10px 0;padding:12px;background:var(--bg);border-radius:8px;border:1px solid var(--rule)">
         <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
           <input type="checkbox" id="bcLoanIsCPI" style="margin-top:3px;accent-color:var(--gold);width:15px;height:15px;flex-shrink:0"/>
@@ -1221,16 +1224,16 @@ let TEAM_MEMBERS=[];   // Owner-only: list of invited/active team members, loade
         <div class="card" style="margin-bottom:14px">
           <div class="card-hdr"><div class="card-title">Financial Year Settings</div></div>
           <div class="card-body" style="padding:14px 18px">
-            <div class="notice ni" style="margin-bottom:10px">These year labels apply to all entities. Set them once here and they flow through consistently.</div>
+            <div class="notice ni" style="margin-bottom:10px">These year labels apply to all entities and every income line in this application. Year 2 always follows Year 1 automatically.</div>
             <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
               <div class="si"><label class="fl" style="margin:0">Year 1</label>
                 <select class="fs" style="width:110px" id="globalFY1" onchange="updateGlobalFY()">
-                  <option>FY2019</option><option>FY2020</option><option>FY2021</option><option>FY2022</option><option selected>FY2023</option><option>FY2024</option><option>FY2025</option><option>FY2026</option>
+                  <option>FY2019</option><option>FY2020</option><option>FY2021</option><option>FY2022</option><option selected>FY2023</option><option>FY2024</option><option>FY2025</option><option>FY2026</option><option>FY2027</option><option>FY2028</option><option>FY2029</option><option>FY2030</option>
                 </select>
               </div>
               <div class="si"><label class="fl" style="margin:0">Year 2</label>
-                <select class="fs" style="width:110px" id="globalFY2" onchange="updateGlobalFY()">
-                  <option>FY2019</option><option>FY2020</option><option>FY2021</option><option>FY2022</option><option>FY2023</option><option selected>FY2024</option><option>FY2025</option><option>FY2026</option>
+                <select class="fs" style="width:110px" id="globalFY2" disabled title="Always the year after Year 1">
+                  <option>FY2019</option><option>FY2020</option><option>FY2021</option><option>FY2022</option><option>FY2023</option><option selected>FY2024</option><option>FY2025</option><option>FY2026</option><option>FY2027</option><option>FY2028</option><option>FY2029</option><option>FY2030</option><option>FY2031</option>
                 </select>
               </div>
               <label class="tog tog-b" style="margin:0">
@@ -1427,6 +1430,11 @@ let TEAM_MEMBERS=[];   // Owner-only: list of invited/active team members, loade
           <label class="fl">Actual Monthly Repayment <span style="font-size:0.7rem;color:var(--muted);font-weight:400">(optional)</span></label>
           <input class="fi" id="dr-actual" type="number" placeholder="Leave blank to auto-calculate"/>
         </div>
+        <!-- Description / Purpose - full width -->
+        <div class="fg">
+          <label class="fl">Description / Purpose <span style="font-size:0.7rem;color:var(--muted);font-weight:400">(optional)</span></label>
+          <input class="fi" id="dr-purpose" type="text" placeholder="e.g. Purchase shed, Working capital"/>
+        </div>
         <!-- Preview -->
         <div style="background:var(--blue-light);border:1.5px solid var(--blue);border-radius:8px;padding:10px 14px;font-size:0.82rem;color:var(--blue)" id="dr-preview">
           Enter limit and rate to see affordability estimate.
@@ -1608,7 +1616,14 @@ function CD(){
 function CAL(){ // active library (group entities filtered by deal active set)
   const g=CG(); const d=CD();
   if(!g||!d)return[];
-  return g.entities.filter(e=>d.activeEntityIds?.includes(e.id));
+  return sortEntitiesForDisplay(g.entities.filter(e=>d.activeEntityIds?.includes(e.id)));
+}
+// Corporate/business entities first, individuals last — stable within each group so
+// entities/individuals don't jumble as they're added across sessions or copied between
+// applications. Used everywhere entities are listed: Entity Library, income/debt/facility
+// dropdowns, BaseCamp, and the credit memo PDF (all of which read through CAL()).
+function sortEntitiesForDisplay(arr){
+  return arr.slice().sort((a,b)=>(a.kind==='individual'?1:0)-(b.kind==='individual'?1:0));
 }
 
 // ════════════════════════════════════════════════════
@@ -3040,7 +3055,7 @@ function renderLibrary(){
   countBar.className='lib-count-bar';
   countBar.innerHTML=`<span>${activeCount} of ${totalCount} entities included in this application</span><span style="font-size:0.68rem;opacity:0.7">Untick to exclude from this deal only — entity data is preserved</span>`;
   container.appendChild(countBar);
-  g.entities.forEach(e=>{
+  sortEntitiesForDisplay(g.entities).forEach(e=>{
     const isActive=d?.activeEntityIds?.includes(e.id)??true;
     const div=document.createElement('div');
     div.className='ecard'+(isActive?'':' inactive-ent'); div.id='ec-'+e.id;
@@ -3562,14 +3577,56 @@ const TAXADJ_TYPES=['Franking Credits','Prior Year Tax Loss','ATO Payment Plan L
 
 function getGFY(){ const d=CD(); return d?.globalFY||{fy1:'FY2023',fy2:'FY2024',showProj:false}; }
 
+// Year 2 is always the year immediately after Year 1 — there is no independent Year 2
+// selection, so every income line reads from one unambiguous pair of years.
+function nextFYLabel(fy){
+  const n=parseInt(String(fy||'').replace('FY',''),10);
+  return isNaN(n)?fy:'FY'+(n+1);
+}
+
 function updateGlobalFY(){
   const d=CD(); if(!d)return;
-  d.globalFY={
-    fy1:document.getElementById('globalFY1').value,
-    fy2:document.getElementById('globalFY2').value,
-    showProj:document.getElementById('globalShowProj').checked
-  };
+  const oldFY=d.globalFY||{fy1:'FY2023',fy2:'FY2024',showProj:false};
+  const newFy1=document.getElementById('globalFY1').value;
+  const newFy2=nextFYLabel(newFy1);
+
+  // Rollover: the new Year 1 is exactly what used to be Year 2 — the classic "a year has
+  // passed" case. Offer to shift each entity's Year 2 figures into Year 1 and clear Year 2
+  // for fresh entry, rather than leaving last year's numbers sitting under the wrong label.
+  const isRollover=newFy1===oldFY.fy2&&newFy1!==oldFY.fy1;
+  if(isRollover){
+    const g=CG();
+    const proceed=confirm(
+      `Rolling forward from ${oldFY.fy1}/${oldFY.fy2} to ${newFy1}/${newFy2}.\n\n`+
+      `Shift last year's Year 2 figures into Year 1 for every entity in this client group, and clear Year 2 ready for fresh entry?\n\n`+
+      `Note: entity financials are shared across every application for this client group, so this will also affect any other application still labelled ${oldFY.fy1}/${oldFY.fy2}. This cannot be undone.`
+    );
+    if(proceed&&g){
+      g.entities.filter(e=>e.kind==='entity').forEach(rollEntityFYForward);
+      toast('Financial years rolled forward for all entities ✓');
+    }
+  }
+
+  const fy2sel=document.getElementById('globalFY2');
+  if(fy2sel)fy2sel.value=newFy2;
+  d.globalFY={fy1:newFy1,fy2:newFy2,showProj:document.getElementById('globalShowProj').checked};
+  saveToStorage();
   renderIncome();
+}
+
+// Shifts one entity's Year 2 P&L and distribution-allocation figures into Year 1, then
+// clears Year 2 ready for the new year's entry. Shareholding %s and projections are
+// structural/forward-looking, not year-specific, so they're left untouched.
+function rollEntityFYForward(e){
+  if(!e.pl)return;
+  e.pl.fy1=e.pl.fy2||{};
+  e.pl.fy2={rev:0,cogs:0,exp:0,tax:0,dist:0,addbacks:[]};
+  if(e.pl.allocations&&Array.isArray(e.pl.allocations.fy1)){
+    e.pl.allocations.fy1.forEach(row=>{
+      row.fy1=row.fy2||0;
+      row.fy2=0;
+    });
+  }
 }
 
 function syncAndRefreshIndiv(eid){
@@ -4664,6 +4721,7 @@ function openEditDebtModal(did){
   document.getElementById('dr-prin').value=debt.monthlyPrin||'';
   document.getElementById('dr-actual').value=debt.actual||'';
   document.getElementById('dr-maturity').value=debt.maturity||'';
+  document.getElementById('dr-purpose').value=debt.purpose||'';
   const assessRow=document.getElementById('dr-assess-row');
   if(assessRow)assessRow.style.display=debt._isProposed?'':'none';
   drProductChange(); drRepTypeChange(); drCalcPreview();
@@ -4761,6 +4819,7 @@ function drSaveDebt(){
     monthlyPrin:document.getElementById('dr-prin').value,
     actual:document.getElementById('dr-actual').value,
     maturity:document.getElementById('dr-maturity').value,
+    purpose:document.getElementById('dr-purpose').value.trim(),
   };
   if(_drEditDid){
     // Update existing debt
@@ -7095,7 +7154,7 @@ function bcGetSecurities(){
       name:s.type+(s.desc?' – '+s.desc:''),
       value:+s.value||0,
       source:s.ownerName||'Security Library',
-      owner:s.ownerName||''
+      ownerName:s.ownerName||''
     }));
   }
   const secs=[];
@@ -7523,6 +7582,7 @@ function openBcAddLoan(){
   });
   document.getElementById('bcLoanLender').value='';
   document.getElementById('bcLoanLimit').value='';
+  document.getElementById('bcLoanPurpose').value='';
   // Reset loan type to existing on every open
   const existingRadio=document.getElementById('bcTypeExisting');
   if(existingRadio){existingRadio.checked=true;}
@@ -7541,6 +7601,7 @@ function confirmBcAddLoan(){
   const lender=document.getElementById('bcLoanLender').value.trim();
   const product=document.getElementById('bcLoanProduct').value;
   const limit=+document.getElementById('bcLoanLimit').value||0;
+  const purpose=document.getElementById('bcLoanPurpose').value.trim();
   const g=CG(); const d=CD(); if(!g||!d)return;
   if(!g.debts)g.debts=[];
   if(!d.includedDebtIds)d.includedDebtIds=[];
@@ -7554,7 +7615,7 @@ function confirmBcAddLoan(){
     repType:'P&I',
     termYrs:'',termMos:'',
     ioYears:'',actual:'',maturity:'',
-    purpose:'',
+    purpose,
     _isProposed:isProposed,
     _isCPI:document.getElementById('bcLoanIsCPI')?.checked||false,
     isJoint:false,refinancing:false,
